@@ -5,7 +5,7 @@ using System.IO;
 using System.Linq;
 using Microsoft.Win32;
 
-// Aliase verwenden, um Namenskonflikte zwischen dnlib und Cecil zu vermeiden
+// Aliase zur Vermeidung von Namenskonflikten zwischen dnlib und Cecil
 using DN = dnlib.DotNet;
 using Cecil = Mono.Cecil;
 
@@ -18,18 +18,19 @@ class Program
     static int Main(string[] args)
     {
         Console.WriteLine("=== Il2Cpp Assembly Fixer x64 (NET 10) ===");
-        Console.WriteLine("Kombinierte Logik: dnlib (Fixing) & Mono.Cecil (Rewriting)");
+        Console.WriteLine("Modus: dnlib (Fixing) + Mono.Cecil (Metadata Normalization)");
+        Console.WriteLine("----------------------------------------------------------");
 
-        // 1. MelonLoader AGF Regeneration (als Prozess-Aufruf)
+        // 1. MelonLoader AGF Regeneration
         RunMelonLoaderRegen();
 
         // Parameter parsen
         bool rewrite = args.Any(a => a == "--rewrite");
         string targetDir = args.Where(a => !a.StartsWith("--")).FirstOrDefault() ?? AutoDetectAssembliesPath();
 
-        if (targetDir == null || !Directory.Exists(targetDir))
+        if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
         {
-            Console.Error.WriteLine("Fehler: Verzeichnis nicht gefunden.");
+            Console.Error.WriteLine("FEHLER: Zielverzeichnis konnte nicht gefunden werden.");
             Console.WriteLine("Usage: Il2CppAssemblyFixer.exe [--rewrite] <Pfad>");
             WaitForKey();
             return 1;
@@ -58,9 +59,9 @@ class Program
             }
         }
 
-        Console.WriteLine("\n--- Zusammenfassung ---");
-        Console.WriteLine($"Dateien bearbeitet: {fixedFiles}");
-        Console.WriteLine($"Duplikate entfernt: {totalRemoved}");
+        Console.WriteLine("\n--- ZUSAMMENFASSUNG ---");
+        Console.WriteLine($"Bearbeitete Dateien: {fixedFiles}");
+        Console.WriteLine($"Entfernte Duplikate: {totalRemoved}");
         
         WaitForKey();
         return 0;
@@ -71,23 +72,23 @@ class Program
         Console.WriteLine("Schritt 1: MelonLoader AGF Regeneration...");
         try
         {
-            // Wir versuchen die MelonLoader.Installer.exe oder das Spiel mit dem Flag zu starten
-            var psi = new ProcessStartInfo
+            string installerPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MelonLoader.Installer.exe");
+            
+            if (File.Exists(installerPath))
             {
-                FileName = "MelonLoader.Installer.exe", 
-                Arguments = "--melonloader.agfregenerate",
-                UseShellExecute = true
-            };
-            // Nur starten, wenn die Datei existiert
-            if (File.Exists(psi.FileName))
-            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = installerPath, 
+                    Arguments = "--melonloader.agfregenerate",
+                    UseShellExecute = true
+                };
                 var proc = Process.Start(psi);
                 proc?.WaitForExit();
-                Console.WriteLine("AGF Regeneration abgeschlossen.");
+                Console.WriteLine("Regeneration abgeschlossen.");
             }
             else
             {
-                Console.WriteLine("MelonLoader.Installer.exe nicht im Ordner gefunden. Überspringe...");
+                Console.WriteLine("Hinweis: MelonLoader.Installer.exe nicht gefunden. Überspringe.");
             }
         }
         catch (Exception ex) { Console.WriteLine($"Info: AGF Regen übersprungen ({ex.Message})"); }
@@ -97,37 +98,38 @@ class Program
     {
         string fileName = Path.GetFileName(dllPath);
         byte[] data = File.ReadAllBytes(dllPath);
-        
-        // --- PHASE A: Fixen mit dnlib ---
-        using var module = DN.ModuleDefMD.Load(data);
         int removed = 0;
 
-        // Suche nach <>O Typen
-        var oTypes = module.GetTypes().Where(t => t.Name.Contains("<>O")).ToList();
-        if (oTypes.Count > 0) Console.WriteLine($"  [{fileName}] '{oTypes.Count}' <>O-Typen gefunden.");
-
-        // Top-Level Duplikate entfernen
-        var seenTop = new HashSet<string>();
-        var toRemoveTop = new List<DN.TypeDef>();
-        foreach (var type in module.Types)
-            if (!seenTop.Add(type.FullName)) toRemoveTop.Add(type);
-        
-        foreach (var t in toRemoveTop) { module.Types.Remove(t); removed++; }
-
-        // Nested Duplikate entfernen
-        foreach (var type in module.GetTypes().ToList())
-            removed += RemoveDuplicateNested(type);
-
-        if (removed > 0)
+        // --- PHASE A: Fixen mit dnlib ---
+        using (var module = DN.ModuleDefMD.Load(data))
         {
-            Console.WriteLine($"  [{fileName}] {removed} Duplikate entfernt.");
-            data = SaveDnlibModule(module); // Update das Byte-Array für eventuellen Cecil-Rewrite
+            // Suche nach <>O Typen
+            var oTypes = module.GetTypes().Where(t => t.Name.Contains("<>O")).ToList();
+            if (oTypes.Count > 0) Console.WriteLine($"  [{fileName}] '{oTypes.Count}' <>O-Typen entdeckt.");
+
+            // Top-Level Duplikate
+            var seenTop = new HashSet<string>();
+            var toRemoveTop = new List<DN.TypeDef>();
+            foreach (var type in module.Types)
+                if (!seenTop.Add(type.FullName)) toRemoveTop.Add(type);
+            
+            foreach (var t in toRemoveTop) { module.Types.Remove(t); removed++; }
+
+            // Nested Duplikate
+            foreach (var type in module.GetTypes().ToList())
+                removed += RemoveDuplicateNested(type);
+
+            if (removed > 0)
+            {
+                Console.WriteLine($"  [{fileName}] {removed} Duplikate entfernt.");
+                data = SaveDnlibModule(module);
+            }
         }
 
         // --- PHASE B: Rewrite mit Mono.Cecil (Normalisierung) ---
         if (forceRewrite)
         {
-            Console.WriteLine($"  [{fileName}] Normalisiere Metadaten via Mono.Cecil...");
+            Console.WriteLine($"  [{fileName}] Metadaten-Rewrite via Mono.Cecil...");
             data = PerformCecilRewrite(data);
         }
 
@@ -165,7 +167,8 @@ class Program
     static byte[] PerformCecilRewrite(byte[] data)
     {
         using var msIn = new MemoryStream(data);
-        using var assembly = Cecil.AssemblyDefinition.ReadAssembly(msIn, new Cecil.ReaderParameters { ReadingMode = Cecil.ReadingMode.Immediate });
+        var readerParams = new Cecil.ReaderParameters { ReadingMode = Cecil.ReadingMode.Immediate };
+        using var assembly = Cecil.AssemblyDefinition.ReadAssembly(msIn, readerParams);
         
         using var msOut = new MemoryStream();
         assembly.Write(msOut);
@@ -187,8 +190,10 @@ class Program
         var folders = new List<string>();
         try
         {
-            string sP = (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath")
-                        ?? (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath");
+            // Korrigiert für .NET 10: defaultValue (null) hinzugefügt
+            string sP = (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null)
+                        ?? (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath", null);
+            
             if (sP != null)
             {
                 folders.Add(sP);
@@ -201,13 +206,17 @@ class Program
                         {
                             int start = line.IndexOf('"', 6) + 1;
                             int end = line.LastIndexOf('"');
-                            string p = line.Substring(start, end - start).Replace("\\\\", "\\");
-                            if (Directory.Exists(p)) folders.Add(p);
+                            if (start > 0 && end > start)
+                            {
+                                string p = line.Substring(start, end - start).Replace("\\\\", "\\");
+                                if (Directory.Exists(p)) folders.Add(p);
+                            }
                         }
                     }
                 }
             }
-        } catch { }
+        } 
+        catch { /* Ignorieren */ }
         return folders.Distinct().ToList();
     }
 
@@ -215,7 +224,7 @@ class Program
     {
         if (!Console.IsInputRedirected)
         {
-            Console.WriteLine("\nBeliebige Taste drücken...");
+            Console.WriteLine("\nDrücke eine beliebige Taste zum Beenden...");
             Console.ReadKey(true);
         }
     }
