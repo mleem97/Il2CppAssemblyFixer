@@ -1,231 +1,118 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using dnlib.DotNet;
 using Microsoft.Win32;
 
-// Use aliases to prevent naming conflicts between dnlib and Cecil
-using DN = dnlib.DotNet;
-using Cecil = Mono.Cecil;
-
-namespace Il2CppAssemblyFixer;
-
-class Program
+namespace Il2CppAssemblyFixer
 {
-    const string GameFolder = "Data Center";
-
-    static int Main(string[] args)
+    class Program
     {
-        Console.WriteLine("=== Il2Cpp Assembly Fixer x64 (NET 10) ===");
-        Console.WriteLine("Mode: dnlib (Fixing) + Mono.Cecil (Metadata Normalization)");
-        Console.WriteLine("----------------------------------------------------------");
+        // Name of the game folder from your logs
+        const string GameFolderName = "Data Center";
 
-        // 1. Run MelonLoader AGF Regeneration
-        RunMelonLoaderRegen();
-
-        // Parse parameters
-        bool rewrite = args.Any(a => a == "--rewrite");
-        string targetDir = args.Where(a => !a.StartsWith("--")).FirstOrDefault() ?? AutoDetectAssembliesPath();
-
-        if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
+        static void Main(string[] args)
         {
-            Console.Error.WriteLine("ERROR: Target directory not found.");
-            Console.WriteLine("Usage: Il2CppAssemblyFixer.exe [--rewrite] <Path>");
-            WaitForKey();
-            return 1;
+            Console.WriteLine("=== Il2Cpp Duplicate Type Fixer ===");
+            
+            // 1. Determine Path
+            string targetDir = args.Length > 0 ? args[0] : AutoDetectPath();
+
+            if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
+            {
+                Console.WriteLine("Error: Could not find Il2CppAssemblies folder.");
+                Console.WriteLine("Please drag and drop the 'Il2CppAssemblies' folder onto this EXE.");
+                Console.ReadLine();
+                return;
+            }
+
+            Console.WriteLine($"Target: {targetDir}");
+            var files = Directory.GetFiles(targetDir, "*.dll");
+
+            foreach (var file in files)
+            {
+                FixAssembly(file);
+            }
+
+            Console.WriteLine("\nDone! You can now start the game.");
+            System.Threading.Thread.Sleep(3000);
         }
 
-        Console.WriteLine($"Target Directory: {targetDir}");
-        var dllFiles = Directory.GetFiles(targetDir, "*.dll");
-        
-        int fixedFiles = 0;
-        int totalRemoved = 0;
-
-        foreach (var dllPath in dllFiles)
+        static void FixAssembly(string path)
         {
             try
             {
-                int removed = ProcessAssembly(dllPath, rewrite);
-                if (removed > 0 || rewrite)
+                // Load the module
+                byte[] data = File.ReadAllBytes(path);
+                var module = ModuleDefMD.Load(data);
+                bool modified = false;
+
+                // Dictionary to track full names of types we've seen
+                var seenTypes = new HashSet<string>();
+                var toRemove = new List<TypeDef>();
+
+                // We iterate through all types in the assembly
+                foreach (var type in module.GetTypes())
                 {
-                    fixedFiles++;
-                    totalRemoved += Math.Max(0, removed);
+                    // The log specifically complains about types named "<>O"
+                    // but we check for any duplicates to be safe
+                    if (!seenTypes.Add(type.FullName))
+                    {
+                        if (type.Name.Contains("<>O"))
+                        {
+                            toRemove.Add(type);
+                        }
+                    }
+                }
+
+                if (toRemove.Count > 0)
+                {
+                    Console.WriteLine($"Processing {Path.GetFileName(path)}: Removing {toRemove.Count} duplicate types...");
+                    
+                    foreach (var type in toRemove)
+                    {
+                        if (type.IsNested)
+                        {
+                            type.DeclaringType.NestedTypes.Remove(type);
+                        }
+                        else
+                        {
+                            module.Types.Remove(type);
+                        }
+                    }
+                    modified = true;
+                }
+
+                if (modified)
+                {
+                    string tempFile = path + ".tmp";
+                    module.Write(tempFile);
+                    module.Dispose();
+                    File.Delete(path);
+                    File.Move(tempFile, path);
+                }
+                else
+                {
+                    module.Dispose();
                 }
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"ERROR processing {Path.GetFileName(dllPath)}: {ex.Message}");
+                Console.WriteLine($"Failed to fix {Path.GetFileName(path)}: {ex.Message}");
             }
         }
 
-        Console.WriteLine("\n--- SUMMARY ---");
-        Console.WriteLine($"Files processed: {fixedFiles}");
-        Console.WriteLine($"Duplicates removed: {totalRemoved}");
-        
-        WaitForKey();
-        return 0;
-    }
-
-    static void RunMelonLoaderRegen()
-    {
-        Console.WriteLine("Step 1: MelonLoader AGF Regeneration...");
-        try
+        static string AutoDetectPath()
         {
-            string installerPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MelonLoader.Installer.exe");
-            
-            if (File.Exists(installerPath))
+            // Tries to find the path based on your log directory
+            string steamPath = (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null);
+            if (steamPath != null)
             {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = installerPath, 
-                    Arguments = "--melonloader.agfregenerate",
-                    UseShellExecute = true
-                };
-                var proc = Process.Start(psi);
-                proc?.WaitForExit();
-                Console.WriteLine("Regeneration completed.");
+                string path = Path.Combine(steamPath, "steamapps", "common", GameFolderName, "MelonLoader", "Il2CppAssemblies");
+                if (Directory.Exists(path)) return path;
             }
-            else
-            {
-                Console.WriteLine("Note: MelonLoader.Installer.exe not found in app directory. Skipping.");
-            }
-        }
-        catch (Exception ex) { Console.WriteLine($"Info: AGF Regen skipped ({ex.Message})"); }
-    }
-
-    static int ProcessAssembly(string dllPath, bool forceRewrite)
-    {
-        string fileName = Path.GetFileName(dllPath);
-        byte[] data = File.ReadAllBytes(dllPath);
-        int removed = 0;
-
-        // --- PHASE A: Fixing with dnlib ---
-        using (var module = DN.ModuleDefMD.Load(data))
-        {
-            // Scanning for <>O types
-            var oTypes = module.GetTypes().Where(t => t.Name.Contains("<>O")).ToList();
-            if (oTypes.Count > 0) Console.WriteLine($"  [{fileName}] Found '{oTypes.Count}' <>O types.");
-
-            // Remove Top-Level Duplicates
-            var seenTop = new HashSet<string>();
-            var toRemoveTop = new List<DN.TypeDef>();
-            foreach (var type in module.Types)
-                if (!seenTop.Add(type.FullName)) toRemoveTop.Add(type);
-            
-            foreach (var t in toRemoveTop) { module.Types.Remove(t); removed++; }
-
-            // Remove Nested Duplicates
-            foreach (var type in module.GetTypes().ToList())
-                removed += RemoveDuplicateNested(type);
-
-            if (removed > 0)
-            {
-                Console.WriteLine($"  [{fileName}] Removed {removed} duplicate(s).");
-                data = SaveDnlibModule(module);
-            }
-        }
-
-        // --- PHASE B: Rewrite with Mono.Cecil (Normalization) ---
-        if (forceRewrite)
-        {
-            Console.WriteLine($"  [{fileName}] Normalizing metadata via Mono.Cecil...");
-            data = PerformCecilRewrite(data);
-        }
-
-        if (removed > 0 || forceRewrite)
-        {
-            File.WriteAllBytes(dllPath, data);
-            return removed > 0 ? removed : 1;
-        }
-
-        return 0;
-    }
-
-    static int RemoveDuplicateNested(DN.TypeDef type)
-    {
-        if (type.NestedTypes.Count < 2) return 0;
-        var seen = new HashSet<string>();
-        var toRemove = new List<DN.TypeDef>();
-        foreach (var n in type.NestedTypes)
-            if (!seen.Add(n.Name.String)) toRemove.Add(n);
-        
-        foreach (var t in toRemove) type.NestedTypes.Remove(t);
-        
-        int count = toRemove.Count;
-        foreach (var n in type.NestedTypes) count += RemoveDuplicateNested(n);
-        return count;
-    }
-
-    static byte[] SaveDnlibModule(DN.ModuleDefMD module)
-    {
-        using var ms = new MemoryStream();
-        module.Write(ms);
-        return ms.ToArray();
-    }
-
-    static byte[] PerformCecilRewrite(byte[] data)
-    {
-        using var msIn = new MemoryStream(data);
-        var readerParams = new Cecil.ReaderParameters { ReadingMode = Cecil.ReadingMode.Immediate };
-        using var assembly = Cecil.AssemblyDefinition.ReadAssembly(msIn, readerParams);
-        
-        using var msOut = new MemoryStream();
-        assembly.Write(msOut);
-        return msOut.ToArray();
-    }
-
-    static string AutoDetectAssembliesPath()
-    {
-        foreach (var lib in GetSteamLibraryFolders())
-        {
-            string path = Path.Combine(lib, "steamapps", "common", GameFolder, "MelonLoader", "Il2CppAssemblies");
-            if (Directory.Exists(path)) return path;
-        }
-        return null;
-    }
-
-    static List<string> GetSteamLibraryFolders()
-    {
-        var folders = new List<string>();
-        try
-        {
-            // .NET 10 Fix: defaultValue (null) is mandatory
-            string sP = (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null)
-                        ?? (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath", null);
-            
-            if (sP != null)
-            {
-                folders.Add(sP);
-                string vdf = Path.Combine(sP, "steamapps", "libraryfolders.vdf");
-                if (File.Exists(vdf))
-                {
-                    foreach (var line in File.ReadAllLines(vdf))
-                    {
-                        if (line.Trim().StartsWith("\"path\""))
-                        {
-                            int start = line.IndexOf('"', 6) + 1;
-                            int end = line.LastIndexOf('"');
-                            if (start > 0 && end > start)
-                            {
-                                string p = line.Substring(start, end - start).Replace("\\\\", "\\");
-                                if (Directory.Exists(p)) folders.Add(p);
-                            }
-                        }
-                    }
-                }
-            }
-        } 
-        catch { /* Ignore registry errors */ }
-        return folders.Distinct().ToList();
-    }
-
-    static void WaitForKey()
-    {
-        if (!Console.IsInputRedirected)
-        {
-            Console.WriteLine("\nPress any key to exit...");
-            Console.ReadKey(true);
+            return "";
         }
     }
 }
