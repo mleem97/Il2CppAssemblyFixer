@@ -1,118 +1,125 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using dnlib.DotNet;
 using Microsoft.Win32;
 
-namespace Il2CppAssemblyFixer
+// Explicit Aliases for both libraries
+using DN = dnlib.DotNet;
+using Cecil = Mono.Cecil;
+
+namespace Il2CppAssemblyFixer;
+
+class Program
 {
-    class Program
+    const string GameFolder = "Data Center";
+
+    static int Main(string[] args)
     {
-        // Name of the game folder from your logs
-        const string GameFolderName = "Data Center";
+        Console.WriteLine("=== Il2Cpp Assembly Fixer x64 (NET 10) ===");
+        Console.WriteLine("Libraries: dnlib & Mono.Cecil included.");
 
-        static void Main(string[] args)
+        // 1. Mandatory MelonLoader AGF Regeneration
+        RunMelonLoaderRegen();
+
+        bool rewrite = args.Any(a => a == "--rewrite");
+        string targetDir = args.Where(a => !a.StartsWith("--")).FirstOrDefault() ?? AutoDetectPath();
+
+        if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
         {
-            Console.WriteLine("=== Il2Cpp Duplicate Type Fixer ===");
-            
-            // 1. Determine Path
-            string targetDir = args.Length > 0 ? args[0] : AutoDetectPath();
-
-            if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
-            {
-                Console.WriteLine("Error: Could not find Il2CppAssemblies folder.");
-                Console.WriteLine("Please drag and drop the 'Il2CppAssemblies' folder onto this EXE.");
-                Console.ReadLine();
-                return;
-            }
-
-            Console.WriteLine($"Target: {targetDir}");
-            var files = Directory.GetFiles(targetDir, "*.dll");
-
-            foreach (var file in files)
-            {
-                FixAssembly(file);
-            }
-
-            Console.WriteLine("\nDone! You can now start the game.");
-            System.Threading.Thread.Sleep(3000);
+            Console.Error.WriteLine("ERROR: Target directory not found.");
+            return 1;
         }
 
-        static void FixAssembly(string path)
+        Console.WriteLine($"Processing directory: {targetDir}");
+        var dllFiles = Directory.GetFiles(targetDir, "*.dll");
+        
+        int fixedCount = 0;
+        foreach (var dllPath in dllFiles)
         {
-            try
-            {
-                // Load the module
-                byte[] data = File.ReadAllBytes(path);
-                var module = ModuleDefMD.Load(data);
-                bool modified = false;
-
-                // Dictionary to track full names of types we've seen
-                var seenTypes = new HashSet<string>();
-                var toRemove = new List<TypeDef>();
-
-                // We iterate through all types in the assembly
-                foreach (var type in module.GetTypes())
-                {
-                    // The log specifically complains about types named "<>O"
-                    // but we check for any duplicates to be safe
-                    if (!seenTypes.Add(type.FullName))
-                    {
-                        if (type.Name.Contains("<>O"))
-                        {
-                            toRemove.Add(type);
-                        }
-                    }
-                }
-
-                if (toRemove.Count > 0)
-                {
-                    Console.WriteLine($"Processing {Path.GetFileName(path)}: Removing {toRemove.Count} duplicate types...");
-                    
-                    foreach (var type in toRemove)
-                    {
-                        if (type.IsNested)
-                        {
-                            type.DeclaringType.NestedTypes.Remove(type);
-                        }
-                        else
-                        {
-                            module.Types.Remove(type);
-                        }
-                    }
-                    modified = true;
-                }
-
-                if (modified)
-                {
-                    string tempFile = path + ".tmp";
-                    module.Write(tempFile);
-                    module.Dispose();
-                    File.Delete(path);
-                    File.Move(tempFile, path);
-                }
-                else
-                {
-                    module.Dispose();
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to fix {Path.GetFileName(path)}: {ex.Message}");
+            try {
+                if (ProcessAssembly(dllPath, rewrite)) fixedCount++;
+            } catch (Exception ex) {
+                Console.Error.WriteLine($"Failed {Path.GetFileName(dllPath)}: {ex.Message}");
             }
         }
 
-        static string AutoDetectPath()
+        Console.WriteLine($"\nFinished. Fixed {fixedCount} assemblies.");
+        return 0;
+    }
+
+    static void RunMelonLoaderRegen()
+    {
+        Console.WriteLine("Running MelonLoader AGF Regeneration...");
+        try {
+            string installer = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MelonLoader.Installer.exe");
+            if (File.Exists(installer)) {
+                Process.Start(new ProcessStartInfo(installer, "--melonloader.agfregenerate") { UseShellExecute = true })?.WaitForExit();
+            }
+        } catch { /* Ignore installer errors */ }
+    }
+
+    static bool ProcessAssembly(string path, bool forceRewrite)
+    {
+        byte[] data = File.ReadAllBytes(path);
+        bool modified = false;
+
+        // --- PHASE 1: dnlib Duplicate Removal ---
+        using (var module = DN.ModuleDefMD.Load(data))
         {
-            // Tries to find the path based on your log directory
-            string steamPath = (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null);
-            if (steamPath != null)
+            var seen = new HashSet<string>();
+            var toRemove = new List<DN.TypeDef>();
+
+            foreach (var type in module.GetTypes())
             {
-                string path = Path.Combine(steamPath, "steamapps", "common", GameFolderName, "MelonLoader", "Il2CppAssemblies");
+                // Target the specific "<>O" duplicates causing the crash
+                if (!seen.Add(type.FullName) && type.Name.Contains("<>O"))
+                    toRemove.Add(type);
+            }
+
+            if (toRemove.Count > 0)
+            {
+                Console.WriteLine($"  [{Path.GetFileName(path)}] Removing {toRemove.Count} duplicates.");
+                foreach (var t in toRemove)
+                {
+                    if (t.IsNested) t.DeclaringType.NestedTypes.Remove(t);
+                    else module.Types.Remove(t);
+                }
+                
+                using var ms = new MemoryStream();
+                module.Write(ms);
+                data = ms.ToArray();
+                modified = true;
+            }
+        }
+
+        // --- PHASE 2: Mono.Cecil Metadata Normalization ---
+        // Always run if forced or if dnlib made changes
+        if (forceRewrite || modified)
+        {
+            using var msIn = new MemoryStream(data);
+            using var asm = Cecil.AssemblyDefinition.ReadAssembly(msIn, new Cecil.ReaderParameters { ReadingMode = Cecil.ReadingMode.Immediate });
+            using var msOut = new MemoryStream();
+            asm.Write(msOut);
+            data = msOut.ToArray();
+            modified = true;
+        }
+
+        if (modified) File.WriteAllBytes(path, data);
+        return modified;
+    }
+
+    static string AutoDetectPath()
+    {
+        try {
+            string sP = (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null)
+                        ?? (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath", null);
+            if (sP != null) {
+                string path = Path.Combine(sP, "steamapps", "common", GameFolder, "MelonLoader", "Il2CppAssemblies");
                 if (Directory.Exists(path)) return path;
             }
-            return "";
-        }
+        } catch { }
+        return null;
     }
 }
