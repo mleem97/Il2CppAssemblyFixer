@@ -1,13 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
-  <!-- BASIS CONFIG -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net6.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>  <!-- .NET 10! -->
     <AssemblyName>Il2CppAssemblyFixer</AssemblyName>
-    <RootNamespace>Il2CppAssemblyFixer</RootNamespace>
     
-    <!-- SINGLE-FILE + SELF-CONTAINED -->
+    <!-- SINGLE FILE MAGIC -->
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <PublishTrimmed>true</PublishTrimmed>
@@ -15,39 +12,20 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     
     <!-- PLATFORMS -->
-    <Platforms>x64;x86</Platforms>
-    <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
+    <Platforms>AnyCPU</Platforms>
+    <RuntimeIdentifiers>win-x64;win-x86;linux-x64</RuntimeIdentifiers>
     
-    <!-- VERSIONING (für GitHub Actions) -->
-    <VersionPrefix>1.0</VersionPrefix>
-    <VersionSuffix>0</VersionSuffix>
+    <!-- VERSIONING -->
+    <Version>1.0.0</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
     
-    <!-- OPTIMIERUNGEN -->
-    <Optimize>true</Optimize>
-    <DebugType>embedded</DebugType>
-    <DebugSymbols>true</DebugSymbols>
+    <!-- .NET 10 Optimierungen -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>false</UseSystemResourceKeys>
     
-    <!-- WINDOWS SPEZIFISCH -->
-    <UseWindowsForms>false</UseWindowsForms>
-    <EnableWindowsTargeting>true</EnableWindowsTargeting>
-    
-    <!-- WARNUNGEN -->
-    <WarningsAsErrors>true</WarningsAsErrors>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
-  <!-- PACKAGE REFERENCES -->
   <ItemGroup>
     <PackageReference Include="dnlib" Version="4.5.0" />
-    <!-- Optional: Für bessere Windows Kompatibilität -->
-    <!-- <PackageReference Include="Microsoft.Windows.Compatibility" Version="6.0.0" /> -->
   </ItemGroup>
-
-  <!-- PUBLISH PROFILES (für dotnet publish) -->
-  <ItemGroup>
-    <PublishReadyToRunSingleFile Include="$(RuntimeIdentifier)" PublishReadyToRun="true" PublishSingleFile="true" SelfContained="true" />
-  </ItemGroup>
-
 </Project>
