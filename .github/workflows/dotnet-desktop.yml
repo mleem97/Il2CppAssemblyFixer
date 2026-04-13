@@ -1,12 +1,11 @@
-# .github/workflows/build-release.yml
-name: Build & Auto-Release Self-Contained App
+# .github/workflows/build-release.yml (angepasst)
+name: Build & Auto-Release Il2CppAssemblyFixer
 
 on:
   push:
     branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
-  # Automatische Releases bei Tags (v1.0.0, v1.0.1, etc.)
   create:
     tags:
       - 'v*'
@@ -14,137 +13,65 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    permissions:
-      contents: write  # Für auto-releases
 
     steps:
-    # === CHECKOUT ===
     - name: Checkout
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
-    # === .NET 8 Setup ===
-    - name: Setup .NET 8
+    # === NET 6 Setup ===
+    - name: Setup .NET 6
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '8.0.x'
+        dotnet-version: '6.0.x'
 
-    # === MSBuild Setup ===
-    - name: Setup MSBuild
-      uses: microsoft/setup-msbuild@v2
-
-    # === Version ermitteln ===
-    - name: Get version
-      id: version
-      uses: irelly/releaser@v1
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        # Falls kein Tag: latest commit hash
-        # Falls Tag vorhanden: Tag-Name (v1.0.0)
-
-    - name: Display version
-      run: echo "Building version: ${{ steps.version.outputs.version }}"
-
-    # === Restore ===
-    - name: Restore
-      run: dotnet restore Il2CppAssemblyFixer.sln
-
-    # === Build self-contained EXE (x64) ===
-    - name: Build Self-Contained x64
+    # === Build x64 ===
+    - name: Publish x64 Self-Contained
       run: |
-        dotnet publish Il2CppAssemblyFixer/Il2CppAssemblyFixer.csproj \
-          -c Release \
-          -r win-x64 \
-          --self-contained true \
-          -p:PublishSingleFile=true \
-          -p:PublishTrimmed=true \
-          -p:IncludeNativeLibrariesForSelfExtract=true \
-          -p:Version=${{ steps.version.outputs.version }} \
-          -o publish/win-x64 \
-          /p:PublishReadyToRun=true
+        dotnet publish Il2CppAssemblyFixer.csproj `
+          -c Release `
+          -r win-x64 `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:PublishTrimmed=true `
+          -o publish/x64
 
-    # === Build self-contained EXE (x86) ===
-    - name: Build Self-Contained x86
+    # === Build x86 ===
+    - name: Publish x86 Self-Contained  
       run: |
-        dotnet publish Il2CppAssemblyFixer/Il2CppAssemblyFixer.csproj \
-          -c Release \
-          -r win-x86 \
-          --self-contained true \
-          -p:PublishSingleFile=true \
-          -p:PublishTrimmed=true \
-          -p:IncludeNativeLibrariesForSelfExtract=true \
-          -p:Version=${{ steps.version.outputs.version }} \
-          -o publish/win-x86 \
-          /p:PublishReadyToRun=true
+        dotnet publish Il2CppAssemblyFixer.csproj `
+          -c Release `
+          -r win-x86 `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:PublishTrimmed=true `
+          -o publish/x86
 
-    # === ZIPs erstellen ===
-    - name: Create ZIP archives
+    # === ZIPs ===
+    - name: Create Release ZIPs
+      shell: pwsh
       run: |
-        mkdir release
-        7z a release/Il2CppAssemblyFixer_${{ steps.version.outputs.version }}_x64.zip publish/win-x64/*
-        7z a release/Il2CppAssemblyFixer_${{ steps.version.outputs.version }}_x86.zip publish/win-x86/*
-        7z a release/Il2CppAssemblyFixer_${{ steps.version.outputs.version }}_both.zip release/*.zip
+        $version = (git describe --tags --abbrev=0).TrimStart('v')
+        Compress-Archive -Path "publish/x64/*" -DestinationPath "Il2CppAssemblyFixer_${version}_x64.zip"
+        Compress-Archive -Path "publish/x86/*" -DestinationPath "Il2CppAssemblyFixer_${version}_x86.zip"
 
-    # === Artifact upload ===
-    - name: Upload artifacts
+    # === Upload ===
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: Il2CppAssemblyFixer-${{ steps.version.outputs.version }}
-        path: release/
+        name: Il2CppAssemblyFixer-Binaries
+        path: "*.zip"
 
-  # === AUTO-RELEASE (nur bei Tags) ===
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')  # Nur bei Tags
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v4
       with:
-        name: Il2CppAssemblyFixer-*
         path: artifacts/
-
-    - name: Create Release
+    
+    - name: Release
       uses: softprops/action-gh-release@v1
       with:
-        files: |
-          artifacts/**/*
+        files: artifacts/Il2CppAssemblyFixer-Binaries/*.zip
         generate_release_notes: true
-        tag_name: ${{ github.ref_name }}
-        name: Il2CppAssemblyFixer ${{ github.ref_name }}
-        body: |
-          # Il2CppAssemblyFixer ${{ github.ref_name }}
-          
-          ## Self-Contained EXEs:
-          - ✅ **x64**: `Il2CppAssemblyFixer_${{ github.ref_name }}_x64.zip`
-          - ✅ **x86**: `Il2CppAssemblyFixer_${{ github.ref_name }}_x86.zip`
-          
-          ## Features:
-          - Single-file EXE (10-15MB)
-          - Self-contained (.NET 8 nicht nötig)
-          - Verbose Logging
-          - Auto-Detection Steam/Data Center
-          - Duplicate Type Removal
-          
-          ## Usage:
-          ```
-          Il2CppAssemblyFixer.exe
-          # oder mit Pfad:
-          Il2CppAssemblyFixer.exe "C:\Pfad\zu\Il2CppAssemblies"
-          ```
-
-  # === TEST ===
-  test:
-    runs-on: windows-latest
-    steps:
-    - uses: actions/checkout@v4
-    - name: Setup .NET 8
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '8.0.x'
-    - name: Test
-      run: dotnet test --no-build --verbosity normal
