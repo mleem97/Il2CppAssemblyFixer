@@ -5,7 +5,7 @@ using System.IO;
 using System.Linq;
 using Microsoft.Win32;
 
-// Aliase zur Vermeidung von Namenskonflikten zwischen dnlib und Cecil
+// Use aliases to prevent naming conflicts between dnlib and Cecil
 using DN = dnlib.DotNet;
 using Cecil = Mono.Cecil;
 
@@ -18,25 +18,25 @@ class Program
     static int Main(string[] args)
     {
         Console.WriteLine("=== Il2Cpp Assembly Fixer x64 (NET 10) ===");
-        Console.WriteLine("Modus: dnlib (Fixing) + Mono.Cecil (Metadata Normalization)");
+        Console.WriteLine("Mode: dnlib (Fixing) + Mono.Cecil (Metadata Normalization)");
         Console.WriteLine("----------------------------------------------------------");
 
-        // 1. MelonLoader AGF Regeneration
+        // 1. Run MelonLoader AGF Regeneration
         RunMelonLoaderRegen();
 
-        // Parameter parsen
+        // Parse parameters
         bool rewrite = args.Any(a => a == "--rewrite");
         string targetDir = args.Where(a => !a.StartsWith("--")).FirstOrDefault() ?? AutoDetectAssembliesPath();
 
         if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
         {
-            Console.Error.WriteLine("FEHLER: Zielverzeichnis konnte nicht gefunden werden.");
-            Console.WriteLine("Usage: Il2CppAssemblyFixer.exe [--rewrite] <Pfad>");
+            Console.Error.WriteLine("ERROR: Target directory not found.");
+            Console.WriteLine("Usage: Il2CppAssemblyFixer.exe [--rewrite] <Path>");
             WaitForKey();
             return 1;
         }
 
-        Console.WriteLine($"Zielverzeichnis: {targetDir}");
+        Console.WriteLine($"Target Directory: {targetDir}");
         var dllFiles = Directory.GetFiles(targetDir, "*.dll");
         
         int fixedFiles = 0;
@@ -55,13 +55,13 @@ class Program
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"ERROR bei {Path.GetFileName(dllPath)}: {ex.Message}");
+                Console.Error.WriteLine($"ERROR processing {Path.GetFileName(dllPath)}: {ex.Message}");
             }
         }
 
-        Console.WriteLine("\n--- ZUSAMMENFASSUNG ---");
-        Console.WriteLine($"Bearbeitete Dateien: {fixedFiles}");
-        Console.WriteLine($"Entfernte Duplikate: {totalRemoved}");
+        Console.WriteLine("\n--- SUMMARY ---");
+        Console.WriteLine($"Files processed: {fixedFiles}");
+        Console.WriteLine($"Duplicates removed: {totalRemoved}");
         
         WaitForKey();
         return 0;
@@ -69,7 +69,7 @@ class Program
 
     static void RunMelonLoaderRegen()
     {
-        Console.WriteLine("Schritt 1: MelonLoader AGF Regeneration...");
+        Console.WriteLine("Step 1: MelonLoader AGF Regeneration...");
         try
         {
             string installerPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MelonLoader.Installer.exe");
@@ -84,14 +84,14 @@ class Program
                 };
                 var proc = Process.Start(psi);
                 proc?.WaitForExit();
-                Console.WriteLine("Regeneration abgeschlossen.");
+                Console.WriteLine("Regeneration completed.");
             }
             else
             {
-                Console.WriteLine("Hinweis: MelonLoader.Installer.exe nicht gefunden. Überspringe.");
+                Console.WriteLine("Note: MelonLoader.Installer.exe not found in app directory. Skipping.");
             }
         }
-        catch (Exception ex) { Console.WriteLine($"Info: AGF Regen übersprungen ({ex.Message})"); }
+        catch (Exception ex) { Console.WriteLine($"Info: AGF Regen skipped ({ex.Message})"); }
     }
 
     static int ProcessAssembly(string dllPath, bool forceRewrite)
@@ -100,14 +100,14 @@ class Program
         byte[] data = File.ReadAllBytes(dllPath);
         int removed = 0;
 
-        // --- PHASE A: Fixen mit dnlib ---
+        // --- PHASE A: Fixing with dnlib ---
         using (var module = DN.ModuleDefMD.Load(data))
         {
-            // Suche nach <>O Typen
+            // Scanning for <>O types
             var oTypes = module.GetTypes().Where(t => t.Name.Contains("<>O")).ToList();
-            if (oTypes.Count > 0) Console.WriteLine($"  [{fileName}] '{oTypes.Count}' <>O-Typen entdeckt.");
+            if (oTypes.Count > 0) Console.WriteLine($"  [{fileName}] Found '{oTypes.Count}' <>O types.");
 
-            // Top-Level Duplikate
+            // Remove Top-Level Duplicates
             var seenTop = new HashSet<string>();
             var toRemoveTop = new List<DN.TypeDef>();
             foreach (var type in module.Types)
@@ -115,21 +115,21 @@ class Program
             
             foreach (var t in toRemoveTop) { module.Types.Remove(t); removed++; }
 
-            // Nested Duplikate
+            // Remove Nested Duplicates
             foreach (var type in module.GetTypes().ToList())
                 removed += RemoveDuplicateNested(type);
 
             if (removed > 0)
             {
-                Console.WriteLine($"  [{fileName}] {removed} Duplikate entfernt.");
+                Console.WriteLine($"  [{fileName}] Removed {removed} duplicate(s).");
                 data = SaveDnlibModule(module);
             }
         }
 
-        // --- PHASE B: Rewrite mit Mono.Cecil (Normalisierung) ---
+        // --- PHASE B: Rewrite with Mono.Cecil (Normalization) ---
         if (forceRewrite)
         {
-            Console.WriteLine($"  [{fileName}] Metadaten-Rewrite via Mono.Cecil...");
+            Console.WriteLine($"  [{fileName}] Normalizing metadata via Mono.Cecil...");
             data = PerformCecilRewrite(data);
         }
 
@@ -190,7 +190,7 @@ class Program
         var folders = new List<string>();
         try
         {
-            // Korrigiert für .NET 10: defaultValue (null) hinzugefügt
+            // .NET 10 Fix: defaultValue (null) is mandatory
             string sP = (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null)
                         ?? (string)Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath", null);
             
@@ -216,7 +216,7 @@ class Program
                 }
             }
         } 
-        catch { /* Ignorieren */ }
+        catch { /* Ignore registry errors */ }
         return folders.Distinct().ToList();
     }
 
@@ -224,7 +224,7 @@ class Program
     {
         if (!Console.IsInputRedirected)
         {
-            Console.WriteLine("\nDrücke eine beliebige Taste zum Beenden...");
+            Console.WriteLine("\nPress any key to exit...");
             Console.ReadKey(true);
         }
     }
