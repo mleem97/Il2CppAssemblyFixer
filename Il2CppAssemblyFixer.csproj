@@ -1,12 +1,53 @@
 <Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- BASIS CONFIG -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net6.0</TargetFramework>
     <AssemblyName>Il2CppAssemblyFixer</AssemblyName>
-    <Platforms>x64</Platforms>
+    <RootNamespace>Il2CppAssemblyFixer</RootNamespace>
+    
+    <!-- SINGLE-FILE + SELF-CONTAINED -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <PublishTrimmed>true</PublishTrimmed>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    
+    <!-- PLATFORMS -->
+    <Platforms>x64;x86</Platforms>
+    <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
+    
+    <!-- VERSIONING (für GitHub Actions) -->
+    <VersionPrefix>1.0</VersionPrefix>
+    <VersionSuffix>0</VersionSuffix>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    
+    <!-- OPTIMIERUNGEN -->
+    <Optimize>true</Optimize>
+    <DebugType>embedded</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    
+    <!-- WINDOWS SPEZIFISCH -->
+    <UseWindowsForms>false</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    
+    <!-- WARNUNGEN -->
+    <WarningsAsErrors>true</WarningsAsErrors>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
+  <!-- PACKAGE REFERENCES -->
   <ItemGroup>
     <PackageReference Include="dnlib" Version="4.5.0" />
+    <!-- Optional: Für bessere Windows Kompatibilität -->
+    <!-- <PackageReference Include="Microsoft.Windows.Compatibility" Version="6.0.0" /> -->
   </ItemGroup>
+
+  <!-- PUBLISH PROFILES (für dotnet publish) -->
+  <ItemGroup>
+    <PublishReadyToRunSingleFile Include="$(RuntimeIdentifier)" PublishReadyToRun="true" PublishSingleFile="true" SelfContained="true" />
+  </ItemGroup>
+
 </Project>
