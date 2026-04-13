@@ -1,5 +1,5 @@
-# .github/workflows/build-release.yml (angepasst)
-name: Build & Auto-Release Il2CppAssemblyFixer
+# .github/workflows/dotnet10-build.yml
+name: .NET 10 Build & Release
 
 on:
   push:
@@ -7,25 +7,27 @@ on:
   pull_request:
     branches: [ "master" ]
   create:
-    tags:
-      - 'v*'
+    tags: [ 'v*' ]
 
 jobs:
   build:
-    runs-on: windows-latest
-
+    runs-on: windows-latest  # Linux/macOS auch möglich!
+    
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    # === NET 6 Setup ===
-    - name: Setup .NET 6
+    - uses: actions/checkout@v4
+    
+    # === .NET 10 SDK ===
+    - name: Setup .NET 10
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '6.0.x'
-
-    # === Build x64 ===
-    - name: Publish x64 Self-Contained
+        dotnet-version: '10.0.x'  # .NET 10!
+    
+    # === Restore ===
+    - name: Restore
+      run: dotnet restore
+    
+    # === PUBLISH x64 ===
+    - name: Publish x64 (.NET 10)
       run: |
         dotnet publish Il2CppAssemblyFixer.csproj `
           -c Release `
@@ -33,10 +35,10 @@ jobs:
           --self-contained true `
           -p:PublishSingleFile=true `
           -p:PublishTrimmed=true `
-          -o publish/x64
-
-    # === Build x86 ===
-    - name: Publish x86 Self-Contained  
+          -o publish/win-x64
+        
+    # === PUBLISH x86 ===
+    - name: Publish x86 (.NET 10)
       run: |
         dotnet publish Il2CppAssemblyFixer.csproj `
           -c Release `
@@ -44,22 +46,33 @@ jobs:
           --self-contained true `
           -p:PublishSingleFile=true `
           -p:PublishTrimmed=true `
-          -o publish/x86
-
+          -o publish/win-x86
+    
+    # === Linux Bonus ===
+    - name: Publish Linux x64 (.NET 10)
+      run: |
+        dotnet publish Il2CppAssemblyFixer.csproj `
+          -c Release `
+          -r linux-x64 `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:PublishTrimmed=true `
+          -o publish/linux-x64
+    
     # === ZIPs ===
-    - name: Create Release ZIPs
+    - name: Create Release Assets
       shell: pwsh
       run: |
-        $version = (git describe --tags --abbrev=0).TrimStart('v')
-        Compress-Archive -Path "publish/x64/*" -DestinationPath "Il2CppAssemblyFixer_${version}_x64.zip"
-        Compress-Archive -Path "publish/x86/*" -DestinationPath "Il2CppAssemblyFixer_${version}_x86.zip"
-
+        $version = if ($env:GITHUB_REF_NAME.StartsWith('v')) { $env:GITHUB_REF_NAME.TrimStart('v') } else { 'dev' }
+        Compress-Archive -Path "publish/win-x64/Il2CppAssemblyFixer.exe" -DestinationPath "Il2CppAssemblyFixer_${version}_win-x64.zip"
+        Compress-Archive -Path "publish/win-x86/Il2CppAssemblyFixer.exe" -DestinationPath "Il2CppAssemblyFixer_${version}_win-x86.zip"
+        Compress-Archive -Path "publish/linux-x64/Il2CppAssemblyFixer" -DestinationPath "Il2CppAssemblyFixer_${version}_linux-x64.zip"
+    
     # === Upload ===
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v4
       with:
-        name: Il2CppAssemblyFixer-Binaries
-        path: "*.zip"
+        name: Il2CppAssemblyFixer-${{ github.ref_name }}
+        path: Il2CppAssemblyFixer_*.zip
 
   release:
     needs: build
@@ -67,11 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/download-artifact@v4
+    - uses: softprops/action-gh-release@v1
       with:
-        path: artifacts/
-    
-    - name: Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: artifacts/Il2CppAssemblyFixer-Binaries/*.zip
+        files: Il2CppAssemblyFixer_*.zip
         generate_release_notes: true
