@@ -14,7 +14,34 @@ System.BadImageFormatException: Duplicate type with name '<>O' in assembly 'Unit
 
 The tool scans all `.dll` files in the `Il2CppAssemblies` folder, detects duplicate type definitions (both top-level and nested), removes the duplicates, and writes the fixed assemblies back.
 
-## Usage
+---
+
+## Option A – MelonLoader Plugin (recommended)
+
+`Il2CppAssemblyFixerPlugin.dll` is a **MelonPlugin** – it runs *before* any MelonMod is loaded, which means the fix is applied automatically every time you start the game, even after MelonLoader regenerates the Il2Cpp assemblies in the background.
+
+### Installation
+
+1. Download `Il2CppAssemblyFixerPlugin_<version>_MelonLoader.zip` from the [Releases](../../releases) page.
+2. Extract **all three DLLs** from the ZIP into your game's `Plugins/` folder:
+   ```
+   <GameFolder>/
+   └── Plugins/
+       ├── Il2CppAssemblyFixerPlugin.dll   ← the plugin
+       ├── dnlib.dll                        ← required dependency
+       └── Mono.Cecil.dll                   ← required dependency
+   ```
+3. Launch the game normally – the plugin fixes any duplicates automatically on every start.
+
+> **Why a Plugin and not a Mod?**  
+> MelonLoader loads **Plugins** (`/Plugins/`) before it processes the Il2Cpp assemblies.  
+> MelonLoader loads **Mods** (`/Mods/`) *after*, so by that point the `BadImageFormatException` has already occurred. The Plugin lifecycle hook `OnPreInitialization` fires early enough to repair the files before they are loaded.
+
+---
+
+## Option B – Standalone EXE (manual / fallback)
+
+If you prefer to run the fix manually or without MelonLoader, use the standalone executable.
 
 ### Auto-detect (recommended)
 
@@ -41,19 +68,33 @@ Run this tool **after every game update** that triggers MelonLoader's assembly r
 3. Run `Il2CppAssemblyFixer.exe`
 4. Launch the game again — mods should now load correctly
 
+### Available EXE downloads
+
+| File | Platform | Notes |
+|------|----------|-------|
+| `Il2CppAssemblyFixer_<ver>_win-x64.zip` | Windows 64-bit | self-contained, no .NET required |
+| `Il2CppAssemblyFixer_<ver>_win-x86.zip` | Windows 32-bit | self-contained, no .NET required |
+| `Il2CppAssemblyFixer_<ver>_linux-x64.zip` | Linux 64-bit | requires .NET 10 runtime |
+
+---
+
 ## Building from Source
 
-Requires [.NET 6 SDK](https://dotnet.microsoft.com/download/dotnet/6.0) or later.
+Requires [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) and [.NET 6 SDK](https://dotnet.microsoft.com/download/dotnet/6.0).
 
 ```bash
 cd Il2CppAssemblyFixer
 dotnet build -c Release
 ```
 
-The built executable will be at `bin/Release/net6.0/Il2CppAssemblyFixer.exe`.
-
-To publish a self-contained single-file executable:
+### Publish EXE (self-contained)
 
 ```bash
-dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
+dotnet publish Il2CppAssemblyFixer.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
+```
+
+### Publish MelonLoader Plugin DLL
+
+```bash
+dotnet publish MelonPlugin/Il2CppAssemblyFixerPlugin.csproj -c Release --self-contained false
 ```

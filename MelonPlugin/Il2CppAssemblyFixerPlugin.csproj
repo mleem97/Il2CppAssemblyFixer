@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Il2CppAssemblyFixerPlugin</AssemblyName>
+
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+
+    <!-- NOT self-contained – MelonLoader provides the runtime -->
+    <SelfContained>false</SelfContained>
+
+    <NoWarn>$(NoWarn);NU1510</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="dnlib" Version="4.4.0" />
+    <PackageReference Include="Mono.Cecil" Version="0.11.6" />
+    <!--
+      LavaGang.MelonLoader provides MelonLoader's public API for compilation only.
+      The actual MelonLoader assemblies are provided at runtime by the game
+      installation – we therefore exclude all runtime assets from this reference.
+    -->
+    <PackageReference Include="LavaGang.MelonLoader" Version="0.7.2">
+      <PrivateAssets>all</PrivateAssets>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
