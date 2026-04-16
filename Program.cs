@@ -222,7 +222,7 @@ class Program
         byte[] data     = File.ReadAllBytes(path);
         bool   modified = false;
 
-        // ── Phase 4: dnlib – duplicate <>O removal ────────────────────────
+        // ── Phase 4: dnlib – duplicate type removal ───────────────────────
         Debug($"[dnlib] Loading assembly: {fileName}");
         using (var module = DN.ModuleDefMD.Load(data))
         {
@@ -238,12 +238,15 @@ class Program
 
                 if (!seen.Add(fullName))
                 {
-                    // Duplicate full name — keep first occurrence, queue rest for removal
-                    if (type.Name.String.Contains("<>O", StringComparison.Ordinal))
-                    {
-                        Debug($"[dnlib] Duplicate detected: '{fullName}'");
-                        toRemove.Add(type);
-                    }
+                    // Duplicate full name — keep first occurrence, queue rest for removal.
+                    // We remove ALL duplicate types (not just <>O-named ones) because:
+                    //   • No valid .NET assembly contains duplicate type definitions.
+                    //   • Il2Cpp can duplicate parent types (e.g. <>c) whose children
+                    //     (e.g. <>c/<>O) also share the same full name; keeping the
+                    //     duplicate parent while removing only the child still causes
+                    //     a BadImageFormatException at runtime.
+                    Debug($"[dnlib] Duplicate detected: '{fullName}'");
+                    toRemove.Add(type);
                 }
             }
 
@@ -272,7 +275,7 @@ class Program
             }
             else
             {
-                Info($"[dnlib] No duplicate <>O types found in '{fileName}'.");
+                Info($"[dnlib] No duplicate types found in '{fileName}'.");
             }
         }
 
