@@ -16,6 +16,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Exclude the MelonLoader plugin subdirectory from this EXE project -->
+    <Compile Remove="MelonPlugin/**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="dnlib" Version="4.4.0" />
     <PackageReference Include="Mono.Cecil" Version="0.11.6" />
     <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
