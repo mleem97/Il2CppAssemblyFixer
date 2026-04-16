@@ -14,8 +14,8 @@ using Cecil = Mono.Cecil;
 namespace Il2CppAssemblyFixerPlugin;
 
 /// <summary>
-/// MelonPlugin that fixes "Duplicate type '&lt;&gt;O'" BadImageFormatExceptions in
-/// Il2Cpp-generated assemblies before any MelonMod is loaded.
+/// MelonPlugin that fixes BadImageFormatExceptions caused by duplicate type
+/// definitions in Il2Cpp-generated assemblies before any MelonMod is loaded.
 ///
 /// Lifecycle: OnPreInitialization fires before Il2Cpp assemblies are loaded by
 /// MelonLoader, so we can repair the files on disk while they are still safe to
@@ -113,14 +113,14 @@ public class FixerPlugin : MelonPlugin
     // ── Core fix logic (same algorithm as the EXE, embedded for self-sufficiency) ──
 
     /// <summary>
-    /// Removes duplicate "&lt;&gt;O" type definitions from a single assembly.
+    /// Removes all duplicate type definitions from a single assembly.
     /// </summary>
     /// <returns>Number of duplicate types removed (0 = nothing changed).</returns>
     private static int FixAssembly(string path)
     {
         byte[] data = File.ReadAllBytes(path);
 
-        // ── Phase 1: dnlib – detect and remove duplicate <>O types ────────────
+        // ── Phase 1: dnlib – detect and remove all duplicate type definitions ────
         using var module = DN.ModuleDefMD.Load(data);
 
         var seen     = new HashSet<string>(StringComparer.Ordinal);
@@ -129,9 +129,15 @@ public class FixerPlugin : MelonPlugin
         foreach (DN.TypeDef type in module.GetTypes())
         {
             string fullName = type.FullName;
-            if (!seen.Add(fullName) &&
-                type.Name.String.Contains("<>O", StringComparison.Ordinal))
+            if (!seen.Add(fullName))
             {
+                // Duplicate full name — keep first occurrence, queue rest for removal.
+                // We remove ALL duplicate types (not just <>O-named ones) because:
+                //   • No valid .NET assembly contains duplicate type definitions.
+                //   • Il2Cpp can duplicate parent types (e.g. <>c) whose children
+                //     (e.g. <>c/<>O) also share the same full name; keeping the
+                //     duplicate parent while removing only the child still causes
+                //     a BadImageFormatException at runtime.
                 toRemove.Add(type);
             }
         }
