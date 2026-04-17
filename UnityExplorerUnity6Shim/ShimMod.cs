@@ -33,7 +33,7 @@ public sealed class ShimMod : MelonMod
 
     public override void OnDeinitializeMelon()
     {
-        _harmony.UnpatchSelf();
+        _harmony?.UnpatchSelf();
     }
 
     // ── Patch 1: suppress SceneHandler.Init() crash ──────────────────────
