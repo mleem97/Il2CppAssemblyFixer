@@ -23,6 +23,40 @@ class Program
     static int _rewritesPerformed   = 0;
     static int _errors              = 0;
 
+    // ── Assembly filter ────────────────────────────────────────────────────
+    static bool _processAll = false;
+
+    static readonly HashSet<string> SkipAssemblies = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Unity Core — never touch
+        "UnityEngine.CoreModule.dll",
+        "UnityEngine.UIElementsModule.dll",
+        "UnityEngine.IMGUIModule.dll",
+        "UnityEngine.TextCoreModule.dll",
+        "UnityEngine.InputSystem.dll",
+        "UnityEngine.AssetBundleModule.dll",
+        "UnityEngine.SceneManagement.dll",
+        // Interop & Loader
+        "Il2CppInterop.Runtime.dll",
+        "Il2Cppmscorlib.dll",
+        "netstandard.dll",
+        "mscorlib.dll",
+        // UnityExplorer & UniverseLib
+        "UnityExplorer.ML.IL2CPP.CoreCLR.dll",
+        "UniverseLib.ML.IL2CPP.Interop.dll",
+    };
+
+    static bool ShouldProcessAssembly(string path)
+    {
+        string name = Path.GetFileName(path);
+        if (SkipAssemblies.Contains(name)) return false;
+        // Primary: game code
+        if (name.Equals("Assembly-CSharp.dll", StringComparison.OrdinalIgnoreCase))   return true;
+        if (name.StartsWith("Assembly-CSharp", StringComparison.OrdinalIgnoreCase))   return true;
+        // Secondary: all other non-Unity/Interop DLLs when --all is specified
+        return _processAll;
+    }
+
     // ── Structured log helpers ─────────────────────────────────────────────
     static void Info   (string msg) => Console.WriteLine($"[INFO]    {msg}");
     static void Debug  (string msg) => Console.WriteLine($"[DEBUG]   {msg}");
@@ -49,6 +83,9 @@ class Program
 
         if (forceRewrite) Info("Flag --rewrite detected: all assemblies will be rewritten via Mono.Cecil.");
 
+        _processAll = args.Any(a => a.Equals("--all", StringComparison.OrdinalIgnoreCase));
+        if (_processAll) Info("Flag --all: all non-skipped assemblies will be processed.");
+
         if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
         {
             Error("Target directory not found or not specified.");
@@ -58,6 +95,13 @@ class Program
         }
 
         Info($"Target directory resolved: {targetDir}");
+
+        bool restoreBackups = args.Any(a => a.Equals("--restore", StringComparison.OrdinalIgnoreCase));
+        if (restoreBackups)
+        {
+            RestoreAllBackups(targetDir);
+            return 0;
+        }
 
         // ── Step 3: Assembly discovery ────────────────────────────────────
         string[] dllFiles = DiscoverAssemblies(targetDir);
@@ -86,6 +130,18 @@ class Program
         }
 
         PrintSummary();
+
+        bool deployShim = args.Any(a => a.Equals("--deploy-shim", StringComparison.OrdinalIgnoreCase));
+        if (deployShim)
+        {
+            try   { DeployRuntimeShim(targetDir); }
+            catch (Exception ex)
+            {
+                _errors++;
+                Error($"Failed to deploy runtime shim: {ex.Message}");
+            }
+        }
+
         return _errors > 0 ? 2 : 0;
     }
 
@@ -206,8 +262,11 @@ class Program
     static string[] DiscoverAssemblies(string directory)
     {
         Info($"Step 3 – Scanning for .dll files in: {directory}");
-        string[] files = Directory.GetFiles(directory, "*.dll", SearchOption.TopDirectoryOnly);
-        Info($"Found {files.Length} .dll file(s).");
+        string[] files = Directory.GetFiles(directory, "*.dll", SearchOption.TopDirectoryOnly)
+            .Where(ShouldProcessAssembly)
+            .OrderBy(f => f)
+            .ToArray();
+        Info($"Found {files.Length} .dll file(s) to process.");
         foreach (string f in files)
             Debug($"  Discovered: {f}");
         return files;
@@ -307,6 +366,7 @@ class Program
             }
 
             Debug($"Writing {data.Length:N0} bytes back to: {path}");
+            BackupIfNeeded(path);
             File.WriteAllBytes(path, data);
             _assembliesModified++;
             Success($"Saved: {fileName}");
@@ -315,6 +375,54 @@ class Program
         {
             Info($"No changes required for '{fileName}' – skipped.");
         }
+    }
+
+    // ── Backup helpers ─────────────────────────────────────────────────────
+    static void BackupIfNeeded(string path)
+    {
+        string backup = path + ".bak";
+        if (!File.Exists(backup))
+        {
+            File.Copy(path, backup);
+            Info($"Backup created: {Path.GetFileName(backup)}");
+        }
+        else
+        {
+            Debug($"Backup already exists, skipping: {Path.GetFileName(backup)}");
+        }
+    }
+
+    static void RestoreAllBackups(string dir)
+    {
+        Info("Restoring all .bak files...");
+        foreach (string bak in Directory.GetFiles(dir, "*.dll.bak"))
+        {
+            string original = bak[..^4]; // removes ".bak"
+            File.Copy(bak, original, overwrite: true);
+            File.Delete(bak);
+            Success($"Restored: {Path.GetFileName(original)}");
+        }
+    }
+
+    // ── Shim deployment ────────────────────────────────────────────────────
+    static void DeployRuntimeShim(string il2CppAssembliesDir)
+    {
+        // Two directories up → game root → Mods
+        string gameRoot = Path.GetFullPath(Path.Combine(il2CppAssembliesDir, "..", ".."));
+        string modsDir  = Path.Combine(gameRoot, "Mods");
+        Directory.CreateDirectory(modsDir);
+
+        string shimName = "UnityExplorerUnity6Shim.dll";
+        string source   = Path.Combine(AppContext.BaseDirectory, shimName);
+        string dest     = Path.Combine(modsDir, shimName);
+
+        if (!File.Exists(source))
+            throw new FileNotFoundException(
+                $"Shim DLL not found. Build Project 2 first and place '{shimName}' next to this tool.",
+                source);
+
+        File.Copy(source, dest, overwrite: true);
+        Success($"Runtime Shim deployed → {dest}");
     }
 
     // ── Final summary ──────────────────────────────────────────────────────

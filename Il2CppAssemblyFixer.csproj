@@ -18,6 +18,8 @@
   <ItemGroup>
     <!-- Exclude the MelonLoader plugin subdirectory from this EXE project -->
     <Compile Remove="MelonPlugin/**" />
+    <!-- Exclude the Unity6 shim project subdirectory from this EXE project -->
+    <Compile Remove="UnityExplorerUnity6Shim/**" />
   </ItemGroup>
 
   <ItemGroup>
