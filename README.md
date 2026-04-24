@@ -1,8 +1,8 @@
 # Il2CppAssemblyFixer
 
-Fixes **duplicate type definitions** in Il2CppInterop-generated assemblies that prevent MelonLoader mods from loading.
-Also ships **UnityExplorerUnity6Shim** – a companion MelonLoader mod that makes UnityExplorer stable on Unity 6.
+[![Release](https://github.com/mleem97/Il2CppAssemblyFixer/actions/workflows/dotnet-desktop.yml/badge.svg)](https://github.com/mleem97/Il2CppAssemblyFixer/actions/workflows/dotnet-desktop.yml)
 
+A simple tool to repair or fix broken IL2CPP assembly metadata / references in managed code for MelonLoader or BepInEx modding workflows.
 ---
 
 ## The Problem
