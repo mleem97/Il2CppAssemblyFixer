@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Simple Conventional Commit validator for commit-msg hook
+# Usage: git config core.hooksPath .githooks
+
+MSG_FILE="$1"
+MSG="$(sed -n '1p' "$MSG_FILE")"
+
+regex='^(feat|fix|docs|style|refactor|perf|test|chore|build|ci|revert)(\([a-z0-9\-]+\))?(!)?: .+'
+
+if [[ "$MSG" =~ $regex ]]; then
+  exit 0
+fi
+
+echo "ERROR: Commit message does not follow Conventional Commits." >&2
+echo "Expected: <type>(scope?): <description>" >&2
+echo "See: https://www.conventionalcommits.org/" >&2
+exit 1
