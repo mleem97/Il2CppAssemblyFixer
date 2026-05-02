@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Linq;
 using System.Runtime.Versioning;
 using Microsoft.Win32;
 
 // Explicit aliases to avoid ambiguity between dnlib and Mono.Cecil
 using DN = dnlib.DotNet;
+using DNEmit = dnlib.DotNet.Emit;
 using Cecil = Mono.Cecil;
 
 namespace Il2CppAssemblyFixer;
@@ -45,6 +47,12 @@ class Program
         "UnityExplorer.ML.IL2CPP.CoreCLR.dll",
         "UniverseLib.ML.IL2CPP.Interop.dll",
     };
+
+    sealed class ReferenceComparer<T> : IEqualityComparer<T> where T : class
+    {
+        public bool Equals(T x, T y) => ReferenceEquals(x, y);
+        public int GetHashCode(T obj) => RuntimeHelpers.GetHashCode(obj);
+    }
 
     static bool ShouldProcessAssembly(string path)
     {
@@ -272,6 +280,169 @@ class Program
         return files;
     }
 
+    static Dictionary<DN.TypeDef, int> BuildTypeReferenceCounts(DN.ModuleDefMD module)
+    {
+        var counts = new Dictionary<DN.TypeDef, int>(new ReferenceComparer<DN.TypeDef>());
+        foreach (DN.TypeDef type in module.GetTypes())
+            counts[type] = 0;
+
+        void Increment(DN.TypeDef? type)
+        {
+            if (type != null && counts.ContainsKey(type))
+                counts[type]++;
+        }
+
+        void ScanTypeRef(DN.ITypeDefOrRef? typeRef)
+        {
+            switch (typeRef)
+            {
+                case DN.TypeDef typeDef:
+                    Increment(typeDef);
+                    break;
+            }
+        }
+
+        void ScanTypeSig(DN.TypeSig? sig)
+        {
+            while (sig != null)
+            {
+                switch (sig)
+                {
+                    case DN.TypeDefOrRefSig typeDefOrRefSig:
+                        ScanTypeRef(typeDefOrRefSig.TypeDefOrRef);
+                        return;
+
+                    case DN.GenericInstSig genericInstSig:
+                        ScanTypeSig(genericInstSig.GenericType);
+                        foreach (DN.TypeSig argument in genericInstSig.GenericArguments)
+                            ScanTypeSig(argument);
+                        return;
+
+                    case DN.FnPtrSig fnPtrSig:
+                        ScanMethodSig(fnPtrSig.MethodSig);
+                        return;
+
+                    case DN.CModOptSig cModOptSig:
+                        sig = cModOptSig.Next;
+                        continue;
+
+                    case DN.CModReqdSig cModReqdSig:
+                        sig = cModReqdSig.Next;
+                        continue;
+
+                    case DN.PinnedSig pinnedSig:
+                        sig = pinnedSig.Next;
+                        continue;
+
+                    case DN.PtrSig ptrSig:
+                        sig = ptrSig.Next;
+                        continue;
+
+                    case DN.ByRefSig byRefSig:
+                        sig = byRefSig.Next;
+                        continue;
+
+                    case DN.SZArraySig szArraySig:
+                        sig = szArraySig.Next;
+                        continue;
+
+                    case DN.ArraySig arraySig:
+                        sig = arraySig.Next;
+                        continue;
+
+                    case DN.SentinelSig sentinelSig:
+                        sig = sentinelSig.Next;
+                        continue;
+
+                    default:
+                        return;
+                }
+            }
+        }
+
+        void ScanMethodSig(DN.MethodSig? methodSig)
+        {
+            if (methodSig == null)
+                return;
+
+            ScanTypeSig(methodSig.RetType);
+            foreach (DN.TypeSig parameter in methodSig.Params)
+                ScanTypeSig(parameter);
+        }
+
+        void ScanFieldSig(DN.FieldSig? fieldSig)
+        {
+            if (fieldSig != null)
+                ScanTypeSig(fieldSig.Type);
+        }
+
+        void ScanMethodBody(DN.MethodDef method)
+        {
+            DNEmit.CilBody body = method.Body;
+            if (body == null)
+                return;
+
+            foreach (DNEmit.Local local in body.Variables)
+                ScanTypeSig(local.Type);
+
+            foreach (DNEmit.Instruction instruction in body.Instructions)
+            {
+                switch (instruction.Operand)
+                {
+                    case DN.ITypeDefOrRef typeDefOrRef:
+                        ScanTypeRef(typeDefOrRef);
+                        break;
+
+                    case DN.MemberRef memberRef:
+                        if (memberRef.DeclaringType is DN.TypeDef declaringType)
+                            Increment(declaringType);
+                        break;
+
+                    case DN.IMethodDefOrRef methodDefOrRef:
+                        if (methodDefOrRef.DeclaringType is DN.TypeDef methodDeclaringType)
+                            Increment(methodDeclaringType);
+                        break;
+
+                    case DN.IField fieldRef:
+                        if (fieldRef.DeclaringType is DN.TypeDef fieldDeclaringType)
+                            Increment(fieldDeclaringType);
+                        break;
+                }
+            }
+        }
+
+        foreach (DN.TypeDef type in module.GetTypes())
+        {
+            ScanTypeRef(type.BaseType);
+
+            foreach (DN.InterfaceImpl iface in type.Interfaces)
+                ScanTypeRef(iface.Interface);
+
+            foreach (DN.CustomAttribute customAttribute in type.CustomAttributes)
+                if (customAttribute.Constructor != null && customAttribute.Constructor.DeclaringType is DN.TypeDef attributeType)
+                    Increment(attributeType);
+
+            foreach (DN.FieldDef field in type.Fields)
+                ScanFieldSig(field.FieldSig);
+
+            foreach (DN.MethodDef method in type.Methods)
+            {
+                ScanMethodSig(method.MethodSig);
+
+                foreach (DN.CustomAttribute customAttribute in method.CustomAttributes)
+                    if (customAttribute.Constructor != null && customAttribute.Constructor.DeclaringType is DN.TypeDef attributeType)
+                        Increment(attributeType);
+
+                ScanMethodBody(method);
+            }
+
+            foreach (DN.EventDef eventDef in type.Events)
+                ScanTypeRef(eventDef.EventType);
+        }
+
+        return counts;
+    }
+
     // ── Steps 4 & 5: Process a single assembly ─────────────────────────────
     static void ProcessAssembly(string path, bool forceRewrite)
     {
@@ -285,27 +456,29 @@ class Program
         Debug($"[dnlib] Loading assembly: {fileName}");
         using (var module = DN.ModuleDefMD.Load(data))
         {
-            var seen     = new HashSet<string>();
+            Dictionary<DN.TypeDef, int> referenceCounts = BuildTypeReferenceCounts(module);
             var toRemove = new List<DN.TypeDef>();
 
-            // Recursively collect all types (module.GetTypes() is already recursive)
             int scanned = 0;
-            foreach (DN.TypeDef type in module.GetTypes())
+            foreach (IGrouping<string, DN.TypeDef> group in module.GetTypes().GroupBy(type => type.FullName, StringComparer.Ordinal))
             {
-                scanned++;
-                string fullName = type.FullName;
+                List<DN.TypeDef> duplicates = group.ToList();
+                scanned += duplicates.Count;
 
-                if (!seen.Add(fullName))
+                if (duplicates.Count < 2)
+                    continue;
+
+                int referencedCopies = duplicates.Count(type => referenceCounts.TryGetValue(type, out int count) && count > 0);
+                if (referencedCopies > 1)
                 {
-                    // Duplicate full name — keep first occurrence, queue rest for removal.
-                    // We remove ALL duplicate types (not just <>O-named ones) because:
-                    //   • No valid .NET assembly contains duplicate type definitions.
-                    //   • Il2Cpp can duplicate parent types (e.g. <>c) whose children
-                    //     (e.g. <>c/<>O) also share the same full name; keeping the
-                    //     duplicate parent while removing only the child still causes
-                    //     a BadImageFormatException at runtime.
-                    Debug($"[dnlib] Duplicate detected: '{fullName}'");
-                    toRemove.Add(type);
+                    Warn($"[dnlib] Duplicate group '{group.Key}' has {referencedCopies} referenced copies; skipping unsafe removal.");
+                    continue;
+                }
+
+                foreach (DN.TypeDef duplicate in duplicates.Where(type => !referenceCounts.TryGetValue(type, out int count) || count == 0))
+                {
+                    Debug($"[dnlib] Duplicate detected: '{duplicate.FullName}' (reference count: 0)");
+                    toRemove.Add(duplicate);
                 }
             }
 
