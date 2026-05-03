@@ -105,10 +105,12 @@ jobs:
         name: Il2CppAssemblyFixer-Build
         path: assets/*.zip
 
-  # ── GitHub Release (only on version tags) ─────────────────────────────
+  # ── GitHub Release ─────────────────────────────────────────────────────
+  # v* tag  → proper release (latest, not prerelease)
+  # master  → rolling dev-latest prerelease (overwritten each push)
   release:
     needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -120,9 +122,21 @@ jobs:
         name: Il2CppAssemblyFixer-Build
         path: ./
 
-    - name: Create GitHub Release
+    - name: Create release (tag push)
+      if: startsWith(github.ref, 'refs/tags/v')
       uses: softprops/action-gh-release@v2
       with:
         files: "*.zip"
         generate_release_notes: true
         prerelease: false
+        make_latest: true
+
+    - name: Create dev-latest prerelease (master push)
+      if: github.ref == 'refs/heads/master'
+      uses: softprops/action-gh-release@v2
+      with:
+        files: "*.zip"
+        tag_name: dev-latest
+        name: "Dev Build (latest master)"
+        prerelease: true
+        make_latest: false
