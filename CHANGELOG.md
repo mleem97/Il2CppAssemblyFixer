@@ -5,6 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+## [1.50.3-U series] - 2026-05-03
+
+This release introduces a new continuous-delivery versioning scheme: `1.50.3-U{run_number}`.
+Every push to `master` triggers a full build and a real GitHub release tagged with the current CI run number (e.g. `1.50.3-U42`).
+
+### Added
+- **Manifest-based caching in plugin** — each fixed DLL's SHA256 is stored in `.il2cppfixer-manifest`
+  inside the `Il2CppAssemblies` folder. Files whose hash still matches are skipped on subsequent
+  game launches. After MelonLoader regenerates assemblies (post-update), hashes change and the
+  plugin re-runs automatically.
+- **Outer try/catch wrapper** in `OnPreInitialization` — the plugin will never throw an unhandled
+  exception into MelonLoader. Worst case: a warning is logged and MelonLoader continues normally.
+- **Multi-stage path resolution** in plugin — uses `MelonEnvironment.MelonLoaderDirectory` first,
+  then falls back to `<process base>/MelonLoader/Il2CppAssemblies`, then walks up from the loaded
+  plugin DLL location.
+- **Auto-release workflow** — every master push creates a real GitHub release with full
+  release-notes template and links the GitHub compare URL against the previous tag.
+
+### Changed
+- Plugin `MelonInfo` version bumped to `1.50.3` to align with the new versioning scheme.
+- Workflow drops the `dev-latest` rolling prerelease in favour of permanent per-build tags.
+
 ## [0.3.0] - 2026-05-03
 
 ### Added

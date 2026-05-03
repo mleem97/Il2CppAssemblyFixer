@@ -3,16 +3,25 @@ name: .NET Build & Release
 on:
   push:
     branches: [ "master" ]
-    tags: [ 'v*' ]
+    tags: [ 'v*', '*-U*' ]
   pull_request:
     branches: [ "master" ]
+
+env:
+  # Base version for auto-tag scheme: <BASE>-U<run_number>
+  VERSION_BASE: "1.50.3"
 
 jobs:
   build:
     runs-on: windows-latest
 
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # Need full history for previous-tag lookup
 
     - name: Setup .NET 10
       uses: actions/setup-dotnet@v4
@@ -31,6 +40,18 @@ jobs:
         key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
         restore-keys: |
           ${{ runner.os }}-nuget-
+
+    - name: Determine version
+      id: version
+      shell: bash
+      run: |
+        if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+          VERSION="${GITHUB_REF#refs/tags/}"
+        else
+          VERSION="${VERSION_BASE}-U${{ github.run_number }}"
+        fi
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "Building version: $VERSION"
 
     - name: Restore
       run: dotnet restore Il2CppAssemblyFixer.sln
@@ -68,23 +89,20 @@ jobs:
     # ── ZIPs ──────────────────────────────────────────────────────────────
     - name: Create release assets
       shell: pwsh
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
       run: |
-        $version = if ($env:GITHUB_REF_NAME -match '^v') {
-          $env:GITHUB_REF_NAME
-        } else {
-          "dev-$($env:GITHUB_RUN_ID)"
-        }
         New-Item -ItemType Directory -Force -Path assets | Out-Null
 
         # Windows EXE
         Compress-Archive `
-          -Path   "publish/win-x64/Il2CppAssemblyFixer.exe" `
-          -DestinationPath "assets/Il2CppAssemblyFixer_${version}_win-x64.zip"
+          -Path            "publish/win-x64/Il2CppAssemblyFixer.exe" `
+          -DestinationPath "assets/Il2CppAssemblyFixer_${env:VERSION}_win-x64.zip"
 
         # Linux EXE (no .exe extension on linux binary)
         Compress-Archive `
-          -Path   "publish/linux-x64/Il2CppAssemblyFixer" `
-          -DestinationPath "assets/Il2CppAssemblyFixer_${version}_linux-x64.zip"
+          -Path            "publish/linux-x64/Il2CppAssemblyFixer" `
+          -DestinationPath "assets/Il2CppAssemblyFixer_${env:VERSION}_linux-x64.zip"
 
         # Plugin: only the three managed DLLs MelonLoader needs
         $pluginFiles = Get-ChildItem "publish/plugin" -File |
@@ -97,7 +115,7 @@ jobs:
           }
         Compress-Archive `
           -Path            $pluginFiles.FullName `
-          -DestinationPath "assets/Il2CppAssemblyFixerPlugin_${version}_MelonLoader.zip"
+          -DestinationPath "assets/Il2CppAssemblyFixerPlugin_${env:VERSION}_MelonLoader.zip"
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -105,38 +123,94 @@ jobs:
         name: Il2CppAssemblyFixer-Build
         path: assets/*.zip
 
-  # ── GitHub Release ─────────────────────────────────────────────────────
-  # v* tag  → proper release (latest, not prerelease)
-  # master  → rolling dev-latest prerelease (overwritten each push)
+  # ── GitHub Release: every master push + every tag ─────────────────────
   release:
     needs: build
-    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
     - name: Download artifacts
       uses: actions/download-artifact@v4
       with:
         name: Il2CppAssemblyFixer-Build
         path: ./
 
-    - name: Create release (tag push)
-      if: startsWith(github.ref, 'refs/tags/v')
-      uses: softprops/action-gh-release@v2
-      with:
-        files: "*.zip"
-        generate_release_notes: true
-        prerelease: false
-        make_latest: true
+    - name: Determine version + previous tag
+      id: meta
+      shell: bash
+      run: |
+        VERSION="${{ needs.build.outputs.version }}"
 
-    - name: Create dev-latest prerelease (master push)
-      if: github.ref == 'refs/heads/master'
+        # Fetch all tags so we can list them
+        git fetch --tags --force --prune || true
+
+        # Find the most recent tag that isn't this one
+        PREV_TAG=$(git tag --list --sort=-creatordate \
+                   | grep -v "^${VERSION}\$" \
+                   | head -n 1)
+
+        if [[ -z "$PREV_TAG" ]]; then
+          # No prior tag → compare against initial commit
+          PREV_TAG=$(git rev-list --max-parents=0 HEAD | head -n 1)
+        fi
+
+        DATE_UTC=$(date -u '+%Y-%m-%d')
+        TIME_UTC=$(date -u '+%H:%M:%S UTC')
+
+        {
+          echo "version=$VERSION"
+          echo "prev_tag=$PREV_TAG"
+          echo "date=$DATE_UTC"
+          echo "time=$TIME_UTC"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "Version : $VERSION"
+        echo "PrevTag : $PREV_TAG"
+
+    - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: "*.zip"
-        tag_name: dev-latest
-        name: "Dev Build (latest master)"
-        prerelease: true
-        make_latest: false
+        tag_name:    ${{ steps.meta.outputs.version }}
+        name:        ${{ steps.meta.outputs.version }}
+        target_commitish: ${{ github.sha }}
+        files:       "*.zip"
+        prerelease:  false
+        make_latest: true
+        body: |
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.meta.outputs.prev_tag }}...${{ steps.meta.outputs.version }}
+
+          (maybe) Fixes #6
+
+          ## Release Notes: Il2CppAssemblyFixer
+
+          ### **Summary of Functions**
+          The **Il2CppAssemblyFixer** is designed to resolve issues where MelonLoader fails to correctly generate or load assemblies for Il2Cpp-based games. Its core functions include:
+
+          *   **Dependency Resolution:** Manually bridges the gap when the automatic `Il2CppAssemblyGenerator` fails to fetch the correct Unity dependencies.
+          *   **Assembly Repair:** Fixes common "missing method" or "class not found" errors by ensuring the environment is correctly mapped to the game's specific Unity engine version.
+          *   **Automated Injection:** Provides a streamlined way to apply fixes without requiring deep manual edits of internal MelonLoader files.
+
+          ---
+
+          ### **Current Status & Future Plans**
+          *   **Compatibility:** The current `.exe` remains fully functional. No mandatory update is required at this time unless otherwise specified.
+          *   **Roadmap:** I am currently researching ways to implement this logic **automatically** within the MelonLoader workflow to eliminate the need for manual execution in the future.
+
+          ### **Last Tested**
+          *   **Date:** PENDING
+          *   **Time:** PENDING
+          *   **Status:** PENDING
+
+          ---
+
+          > **Note:** If you encounter any issues with the current build, please refer to the [GitHub Issue Tracker](https://github.com/mleem97/Il2CppAssemblyFixer/issues).
+
+          ---
+          <sub>Auto-built from commit ${{ github.sha }} on ${{ steps.meta.outputs.date }} ${{ steps.meta.outputs.time }}</sub>
