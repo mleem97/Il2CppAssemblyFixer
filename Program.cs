@@ -120,7 +120,7 @@ class Program
 
     sealed class ReferenceComparer<T> : IEqualityComparer<T> where T : class
     {
-        public bool Equals(T x, T y) => ReferenceEquals(x, y);
+        public bool Equals(T? x, T? y) => ReferenceEquals(x, y);
         public int GetHashCode(T obj) => RuntimeHelpers.GetHashCode(obj);
     }
 
@@ -150,7 +150,7 @@ class Program
 
         // ── Resolve target directory ──────────────────────────────────────
         bool   forceRewrite = args.Any(a => a.Equals("--rewrite", StringComparison.OrdinalIgnoreCase));
-        string targetDir    = args.Where(a => !a.StartsWith("--")).FirstOrDefault()
+        string? targetDir   = args.Where(a => !a.StartsWith("--")).FirstOrDefault()
                               ?? AutoDetectPath();
 
         if (forceRewrite) Info("Flag --rewrite detected: all assemblies will be rewritten via Mono.Cecil.");
@@ -265,7 +265,7 @@ class Program
     // ── Step 2: Auto-detect game path ─────────────────────────────────────
 
     [SupportedOSPlatform("windows")]
-    static string ReadSteamInstallPath()
+    static string? ReadSteamInstallPath()
     {
         var keys = new[]
         {

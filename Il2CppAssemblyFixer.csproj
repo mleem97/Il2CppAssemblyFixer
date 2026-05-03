@@ -6,7 +6,7 @@
     <AssemblyName>Il2CppAssemblyFixer</AssemblyName>
     
     <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>disable</Nullable>
+    <Nullable>enable</Nullable>
     
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>

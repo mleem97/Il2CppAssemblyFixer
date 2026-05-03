@@ -6,7 +6,7 @@
     <AssemblyName>Il2CppAssemblyFixerPlugin</AssemblyName>
 
     <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>disable</Nullable>
+    <Nullable>enable</Nullable>
 
     <!-- NOT self-contained – MelonLoader provides the runtime -->
     <SelfContained>false</SelfContained>
