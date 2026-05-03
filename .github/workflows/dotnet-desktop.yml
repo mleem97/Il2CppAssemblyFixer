@@ -10,10 +10,10 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Setup .NET 10
       uses: actions/setup-dotnet@v4
       with:
@@ -23,8 +23,7 @@ jobs:
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '6.0.x'
-    
-    # Optional: Cache für schnellere Builds
+
     - name: Cache NuGet packages
       uses: actions/cache@v4
       with:
@@ -33,10 +32,10 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-nuget-
 
-    - name: Restore dependencies
+    - name: Restore
       run: dotnet restore Il2CppAssemblyFixer.sln
 
-    # === EXE: PUBLISH win-x64 (self-contained) ===
+    # ── EXE: Windows x64, self-contained single file ──────────────────────
     - name: Publish EXE win-x64
       run: |
         dotnet publish Il2CppAssemblyFixer.csproj `
@@ -47,86 +46,83 @@ jobs:
           -p:PublishTrimmed=false `
           -o publish/win-x64
 
-    # === EXE: PUBLISH win-x86 (self-contained) ===
-    - name: Publish EXE win-x86
-      run: |
-        dotnet publish Il2CppAssemblyFixer.csproj `
-          -c Release `
-          -r win-x86 `
-          --self-contained true `
-          -p:PublishSingleFile=true `
-          -p:PublishTrimmed=false `
-          -o publish/win-x86
-
-    # === EXE: PUBLISH linux-x64 (NOT self-contained, framework-dependent) ===
+    # ── EXE: Linux x64, self-contained single file ────────────────────────
     - name: Publish EXE linux-x64
       run: |
         dotnet publish Il2CppAssemblyFixer.csproj `
           -c Release `
           -r linux-x64 `
-          --self-contained false `
-          -p:PublishSingleFile=false `
+          --self-contained true `
+          -p:PublishSingleFile=true `
           -p:PublishTrimmed=false `
           -o publish/linux-x64
 
-    # === MelonLoader PLUGIN DLL (net6, NOT self-contained) ===
-    - name: Publish MelonLoader Plugin DLL
+    # ── MelonLoader Plugin DLL (net6, framework-dependent) ────────────────
+    - name: Publish MelonLoader Plugin
       run: |
         dotnet publish MelonPlugin/Il2CppAssemblyFixerPlugin.csproj `
           -c Release `
           --self-contained false `
           -o publish/plugin
 
-    # === ZIPs erstellen ===
-    - name: Create Release Assets
+    # ── ZIPs ──────────────────────────────────────────────────────────────
+    - name: Create release assets
       shell: pwsh
       run: |
-        $version = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME } else { "dev-$($env:GITHUB_RUN_ID)" }
-        New-Item -ItemType Directory -Force -Path "assets"
+        $version = if ($env:GITHUB_REF_NAME -match '^v') {
+          $env:GITHUB_REF_NAME
+        } else {
+          "dev-$($env:GITHUB_RUN_ID)"
+        }
+        New-Item -ItemType Directory -Force -Path assets | Out-Null
 
-        # EXE artefakte (self-contained)
-        Compress-Archive -Path "publish/win-x64/Il2CppAssemblyFixer.exe" `
+        # Windows EXE
+        Compress-Archive `
+          -Path   "publish/win-x64/Il2CppAssemblyFixer.exe" `
           -DestinationPath "assets/Il2CppAssemblyFixer_${version}_win-x64.zip"
-        Compress-Archive -Path "publish/win-x86/Il2CppAssemblyFixer.exe" `
-          -DestinationPath "assets/Il2CppAssemblyFixer_${version}_win-x86.zip"
 
-        # Linux (framework-dependent – kein self-contained)
-        Compress-Archive -Path "publish/linux-x64/*" `
+        # Linux EXE (no .exe extension on linux binary)
+        Compress-Archive `
+          -Path   "publish/linux-x64/Il2CppAssemblyFixer" `
           -DestinationPath "assets/Il2CppAssemblyFixer_${version}_linux-x64.zip"
 
-        # MelonLoader Plugin DLL
-        # Pack only the plugin DLL itself plus required managed dependencies
-        # (dnlib.dll, Mono.Cecil.dll) so MelonLoader can load them side-by-side.
+        # Plugin: only the three managed DLLs MelonLoader needs
         $pluginFiles = Get-ChildItem "publish/plugin" -File |
-          Where-Object { $_.Extension -eq ".dll" -and
-                         ($_.Name -eq "Il2CppAssemblyFixerPlugin.dll" -or
-                          $_.Name -eq "dnlib.dll" -or
-                          $_.Name -eq "Mono.Cecil.dll") }
-        Compress-Archive -Path $pluginFiles.FullName `
+          Where-Object {
+            $_.Extension -eq ".dll" -and $_.Name -in @(
+              "Il2CppAssemblyFixerPlugin.dll",
+              "dnlib.dll",
+              "Mono.Cecil.dll"
+            )
+          }
+        Compress-Archive `
+          -Path            $pluginFiles.FullName `
           -DestinationPath "assets/Il2CppAssemblyFixerPlugin_${version}_MelonLoader.zip"
 
-    - name: Upload Artifacts
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: Il2CppAssemblyFixer-Build
         path: assets/*.zip
 
+  # ── GitHub Release (only on version tags) ─────────────────────────────
   release:
     needs: build
-    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/master')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
-    - name: Download Artifacts
+    - name: Download artifacts
       uses: actions/download-artifact@v4
       with:
         name: Il2CppAssemblyFixer-Build
         path: ./
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
       with:
         files: "*.zip"
         generate_release_notes: true
-        prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dev-{0}', github.run_id) }}
+        prerelease: false

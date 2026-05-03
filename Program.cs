@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Linq;
 using System.Runtime.Versioning;
+using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
 // Explicit aliases to avoid ambiguity between dnlib and Mono.Cecil
@@ -18,6 +19,77 @@ class Program
 {
     const string GameFolder = "Data Center";
 
+    // If this file sits next to the EXE it overrides auto-detection entirely.
+    const string ConfigFileName = "game-path.txt";
+
+    // Top-level folder names under which Steam libraries are commonly found on any drive.
+    static readonly string[] SteamRootCandidates =
+    {
+        "Steam",
+        "SteamLibrary",
+        "Steam Library",
+        "SteamGames",
+        "Games",
+        @"Games\Steam",
+        @"Games\SteamLibrary",
+        @"Program Files\Steam",
+        @"Program Files (x86)\Steam",
+        @"Program Files\SteamLibrary",
+        @"Program Files (x86)\SteamLibrary",
+    };
+
+    // Parent folder names for non-Steam / custom installs (no steamapps\common prefix).
+    // Checked on every drive letter AND inside the user-profile special dirs below.
+    static readonly string[] NonSteamParentCandidates =
+    {
+        "",                           // game folder directly at drive root: D:\Data Center
+        "Games",
+        "MyGames",
+        "My Games",
+        "PC Games",
+        "PCGames",
+        "GameFiles",
+        "Spiele",
+        "Spielebibliothek",
+        @"Program Files",
+        @"Program Files (x86)",
+        "Apps",
+        "Applications",
+        "Software",
+    };
+
+    // User-profile base directories to search for non-Steam installs (populated at runtime).
+    static IEnumerable<string> UserProfileSearchRoots()
+    {
+        string? profile = Environment.GetEnvironmentVariable("USERPROFILE")
+                       ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrEmpty(profile))
+        {
+            yield return profile;
+            yield return Path.Combine(profile, "Desktop");
+            yield return Path.Combine(profile, "Downloads");
+            yield return Path.Combine(profile, "Documents");
+            yield return Path.Combine(profile, "Documents", "Games");
+            yield return Path.Combine(profile, "Documents", "My Games");
+        }
+
+        string? localApp = Environment.GetEnvironmentVariable("LOCALAPPDATA")
+                        ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrEmpty(localApp))
+            yield return localApp;
+    }
+
+    // Linux Steam roots (tried before the generic drive scan on non-Windows).
+    static IEnumerable<string> LinuxSteamRoots()
+    {
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        yield return Path.Combine(home, ".steam", "steam");
+        yield return Path.Combine(home, ".local", "share", "Steam");
+        yield return Path.Combine(home, "snap", "steam", "common", ".steam", "root");
+        yield return "/usr/share/steam";
+        yield return "/opt/steam";
+    }
+
     // ── Counters for final summary ─────────────────────────────────────────
     static int _assembliesProcessed = 0;
     static int _assembliesModified  = 0;
@@ -26,8 +98,6 @@ class Program
     static int _errors              = 0;
 
     // ── Assembly filter ────────────────────────────────────────────────────
-    static bool _processAll = false;
-
     static readonly HashSet<string> SkipAssemblies = new(StringComparer.OrdinalIgnoreCase)
     {
         // Unity Core — never touch
@@ -56,13 +126,7 @@ class Program
 
     static bool ShouldProcessAssembly(string path)
     {
-        string name = Path.GetFileName(path);
-        if (SkipAssemblies.Contains(name)) return false;
-        // Primary: game code
-        if (name.Equals("Assembly-CSharp.dll", StringComparison.OrdinalIgnoreCase))   return true;
-        if (name.StartsWith("Assembly-CSharp", StringComparison.OrdinalIgnoreCase))   return true;
-        // Secondary: all other non-Unity/Interop DLLs when --all is specified
-        return _processAll;
+        return !SkipAssemblies.Contains(Path.GetFileName(path));
     }
 
     // ── Structured log helpers ─────────────────────────────────────────────
@@ -90,9 +154,6 @@ class Program
                               ?? AutoDetectPath();
 
         if (forceRewrite) Info("Flag --rewrite detected: all assemblies will be rewritten via Mono.Cecil.");
-
-        _processAll = args.Any(a => a.Equals("--all", StringComparison.OrdinalIgnoreCase));
-        if (_processAll) Info("Flag --all: all non-skipped assemblies will be processed.");
 
         if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
         {
@@ -201,7 +262,8 @@ class Program
         }
     }
 
-    // ── Step 2: Auto-detect game path via Windows Registry ────────────────
+    // ── Step 2: Auto-detect game path ─────────────────────────────────────
+
     [SupportedOSPlatform("windows")]
     static string ReadSteamInstallPath()
     {
@@ -209,60 +271,177 @@ class Program
         {
             @"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam",
             @"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam",
+            @"HKEY_CURRENT_USER\SOFTWARE\Valve\Steam",
         };
 
         foreach (string key in keys)
         {
             Debug($"Querying registry: {key}\\InstallPath");
-            string value = Registry.GetValue(key, "InstallPath", null) as string;
+            string? value = Registry.GetValue(key, "InstallPath", null) as string;
             if (!string.IsNullOrEmpty(value))
             {
-                Success($"Steam InstallPath found via registry key: {key}");
-                Debug($"Steam path: {value}");
+                Success($"Steam InstallPath found: {key}");
                 return value;
             }
-            Warn($"Registry key not found or empty: {key}");
         }
         return null;
     }
 
-    static string AutoDetectPath()
+    // Parses Steam's libraryfolders.vdf and yields every configured library path.
+    static IEnumerable<string> ParseLibraryFoldersVdf(string steamRoot)
     {
-        Info("Step 2 – Auto-detecting game path via Windows Registry …");
-
-        if (!OperatingSystem.IsWindows())
+        string vdf = Path.Combine(steamRoot, "steamapps", "libraryfolders.vdf");
+        if (!File.Exists(vdf))
         {
-            Warn("Not running on Windows – registry auto-detection skipped.");
-            return null;
+            Debug($"libraryfolders.vdf not found: {vdf}");
+            yield break;
         }
 
-        try
+        Debug($"Parsing: {vdf}");
+        var rx = new Regex(@"""path""\s+""([^""]+)""", RegexOptions.IgnoreCase);
+        foreach (string line in File.ReadLines(vdf))
         {
-            string steamPath = ReadSteamInstallPath();
-            if (steamPath == null)
+            Match m = rx.Match(line);
+            if (m.Success)
             {
-                Warn("Steam install path could not be determined from the registry.");
-                return null;
+                // VDF uses double-backslash; unescape to a real path
+                string lib = m.Groups[1].Value.Replace(@"\\", @"\");
+                Debug($"  VDF library: {lib}");
+                yield return lib;
             }
-
-            string candidate = Path.Combine(steamPath, "steamapps", "common", GameFolder,
-                                            "MelonLoader", "Il2CppAssemblies");
-            Debug($"Candidate Il2CppAssemblies path: {candidate}");
-
-            if (Directory.Exists(candidate))
-            {
-                Success($"Il2CppAssemblies directory found: {candidate}");
-                return candidate;
-            }
-
-            Warn($"Candidate path does not exist: {candidate}");
         }
-        catch (Exception ex)
+    }
+
+    // Checks <steamLibrary>\steamapps\common\<game>\MelonLoader\Il2CppAssemblies
+    static string? TryLibrary(string libraryRoot)
+    {
+        string candidate = Path.Combine(libraryRoot, "steamapps", "common",
+                                        GameFolder, "MelonLoader", "Il2CppAssemblies");
+        return Directory.Exists(candidate) ? candidate : null;
+    }
+
+    // Checks <parentDir>\<game>\MelonLoader\Il2CppAssemblies  (non-Steam layout)
+    static string? TryGameFolder(string parentDir)
+    {
+        if (string.IsNullOrEmpty(parentDir)) return null;
+        string candidate = Path.Combine(parentDir, GameFolder, "MelonLoader", "Il2CppAssemblies");
+        return Directory.Exists(candidate) ? candidate : null;
+    }
+
+    static string? AutoDetectPath()
+    {
+        Info("Step 2 – Auto-detecting game installation path …");
+
+        // ── Step 0: config-file override (game-path.txt next to the EXE) ──────
+        string cfgPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+        if (File.Exists(cfgPath))
         {
-            _errors++;
-            Error($"Exception during registry auto-detection: {ex.Message}");
-            Error($"Stack trace:\n{ex.StackTrace}");
+            string custom = File.ReadAllText(cfgPath).Trim().Trim('"');
+            Info($"Config override found ({ConfigFileName}): {custom}");
+            if (Directory.Exists(custom))
+            {
+                // Accept both the Il2CppAssemblies dir and the game root
+                if (custom.EndsWith("Il2CppAssemblies", StringComparison.OrdinalIgnoreCase))
+                    return custom;
+                string sub = Path.Combine(custom, "MelonLoader", "Il2CppAssemblies");
+                if (Directory.Exists(sub)) return sub;
+            }
+            Warn($"Path in {ConfigFileName} does not exist or is invalid: {custom}");
         }
+
+        // ── Step 1 (Windows): Registry + libraryfolders.vdf ──────────────────
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                string? steamRoot = ReadSteamInstallPath();
+                if (steamRoot != null)
+                {
+                    string? found = TryLibrary(steamRoot);
+                    if (found != null) { Success($"Found (registry): {found}"); return found; }
+
+                    foreach (string lib in ParseLibraryFoldersVdf(steamRoot))
+                    {
+                        found = TryLibrary(lib);
+                        if (found != null) { Success($"Found (VDF library): {found}"); return found; }
+                    }
+                    Warn("Not found in any Steam library from libraryfolders.vdf.");
+                }
+                else
+                {
+                    Warn("Steam registry key not found.");
+                }
+            }
+            catch (Exception ex) { Warn($"Registry/VDF error: {ex.Message}"); }
+        }
+
+        // ── Step 2 (Linux): known Steam roots + VDF ──────────────────────────
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            foreach (string root in LinuxSteamRoots())
+            {
+                string? found = TryLibrary(root);
+                if (found != null) { Success($"Found (Linux Steam): {found}"); return found; }
+                foreach (string lib in ParseLibraryFoldersVdf(root))
+                {
+                    found = TryLibrary(lib);
+                    if (found != null) { Success($"Found (Linux VDF): {found}"); return found; }
+                }
+            }
+        }
+
+        // ── Step 3: all drives × Steam root candidates ────────────────────────
+        Info("Scanning drives for Steam-layout paths …");
+        foreach (char drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        {
+            string driveRoot = $@"{drive}:\";
+            if (!Directory.Exists(driveRoot)) continue;
+
+            foreach (string folder in SteamRootCandidates)
+            {
+                string? found = TryLibrary(Path.Combine(driveRoot, folder));
+                if (found != null) { Success($"Found (Steam scan): {found}"); return found; }
+            }
+        }
+
+        // ── Step 4: all drives × non-Steam / custom parent candidates ─────────
+        Info("Scanning drives for non-Steam / custom installation paths …");
+        foreach (char drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        {
+            string driveRoot = $@"{drive}:\";
+            if (!Directory.Exists(driveRoot)) continue;
+
+            foreach (string folder in NonSteamParentCandidates)
+            {
+                string parent = string.IsNullOrEmpty(folder)
+                    ? driveRoot
+                    : Path.Combine(driveRoot, folder);
+                string? found = TryGameFolder(parent);
+                if (found != null) { Success($"Found (custom scan): {found}"); return found; }
+            }
+        }
+
+        // ── Step 5: user-profile special directories ──────────────────────────
+        Info("Checking user-profile directories …");
+        foreach (string root in UserProfileSearchRoots())
+        {
+            if (!Directory.Exists(root)) continue;
+
+            // Direct child: %USERPROFILE%\Desktop\Data Center
+            string? found = TryGameFolder(root);
+            if (found != null) { Success($"Found (user profile): {found}"); return found; }
+
+            // One level deeper with non-Steam parent names
+            foreach (string folder in NonSteamParentCandidates)
+            {
+                if (string.IsNullOrEmpty(folder)) continue;
+                found = TryGameFolder(Path.Combine(root, folder));
+                if (found != null) { Success($"Found (user profile): {found}"); return found; }
+            }
+        }
+
+        Warn("Game installation not found automatically.");
+        Warn($"Tip: create '{ConfigFileName}' next to this EXE and put the game path inside.");
         return null;
     }
 
@@ -298,6 +477,9 @@ class Program
             {
                 case DN.TypeDef typeDef:
                     Increment(typeDef);
+                    break;
+                case DN.TypeSpec typeSpec:
+                    ScanTypeSig(typeSpec.TypeSig);
                     break;
             }
         }
@@ -394,18 +576,15 @@ class Program
                         break;
 
                     case DN.MemberRef memberRef:
-                        if (memberRef.DeclaringType is DN.TypeDef declaringType)
-                            Increment(declaringType);
+                        ScanTypeRef(memberRef.DeclaringType);
                         break;
 
                     case DN.IMethodDefOrRef methodDefOrRef:
-                        if (methodDefOrRef.DeclaringType is DN.TypeDef methodDeclaringType)
-                            Increment(methodDeclaringType);
+                        ScanTypeRef(methodDefOrRef.DeclaringType);
                         break;
 
                     case DN.IField fieldRef:
-                        if (fieldRef.DeclaringType is DN.TypeDef fieldDeclaringType)
-                            Increment(fieldDeclaringType);
+                        ScanTypeRef(fieldRef.DeclaringType);
                         break;
                 }
             }

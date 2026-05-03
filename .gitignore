@@ -1,6 +1,7 @@
 # Build output
 bin/
 obj/
+publish/
 
 # Visual Studio
 .vs/
@@ -13,3 +14,6 @@ obj/
 # OS
 Thumbs.db
 .DS_Store
+
+# Claude Code
+.claude/

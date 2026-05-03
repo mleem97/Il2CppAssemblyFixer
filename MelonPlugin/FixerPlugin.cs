@@ -209,6 +209,9 @@ public class FixerPlugin : MelonPlugin
                 case DN.TypeDef typeDef:
                     Increment(typeDef);
                     break;
+                case DN.TypeSpec typeSpec:
+                    ScanTypeSig(typeSpec.TypeSig);
+                    break;
             }
         }
 
@@ -304,18 +307,15 @@ public class FixerPlugin : MelonPlugin
                         break;
 
                     case DN.MemberRef memberRef:
-                        if (memberRef.DeclaringType is DN.TypeDef declaringType)
-                            Increment(declaringType);
+                        ScanTypeRef(memberRef.DeclaringType);
                         break;
 
                     case DN.IMethodDefOrRef methodDefOrRef:
-                        if (methodDefOrRef.DeclaringType is DN.TypeDef methodDeclaringType)
-                            Increment(methodDeclaringType);
+                        ScanTypeRef(methodDefOrRef.DeclaringType);
                         break;
 
                     case DN.IField fieldRef:
-                        if (fieldRef.DeclaringType is DN.TypeDef fieldDeclaringType)
-                            Increment(fieldDeclaringType);
+                        ScanTypeRef(fieldRef.DeclaringType);
                         break;
                 }
             }

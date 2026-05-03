@@ -3,57 +3,48 @@ AGENTS
 
 Purpose
 -------
-This document defines the repository agent rules: commit message conventions, changelog format, and semantic-versioning/release workflow.
+Commit message conventions, changelog format, and release workflow for this repository.
 
 1) Commit messages
 ------------------
-- All commits MUST follow the Conventional Commits specification: https://www.conventionalcommits.org/en/v1.0.0/
-- Example summary lines:
-  - `feat(parser): add support for xyz`
-  - `fix(dnlib): avoid deleting referenced types`
-  - `chore: update build script`
-- Breaking changes MUST include the `!` marker or `BREAKING CHANGE:` in the body. These trigger a MAJOR version bump.
+All commits MUST follow the Conventional Commits specification:
+https://www.conventionalcommits.org/en/v1.0.0/
+
+Examples:
+  feat(detection): add game-path.txt config override
+  fix(dnlib): follow TypeSpec wrappers in reference counting
+  chore: remove one-off scripts
+  ci: upgrade release action to v2
+
+Breaking changes require the `!` marker or `BREAKING CHANGE:` in the body (triggers a MAJOR bump).
 
 2) Semantic versioning
 ----------------------
-- Versioning follows Semantic Versioning (SemVer): MAJOR.MINOR.PATCH
-- Map Conventional Commit types onto SemVer:
-  - `feat` → MINOR
-  - `fix` → PATCH
-  - BREAKING CHANGE / `!` → MAJOR
-  - `chore`, `docs`, `style`, `refactor`, `test`, `ci`, `build` → do not affect version unless explicitly bumped
+SemVer: MAJOR.MINOR.PATCH
+
+  feat        → MINOR
+  fix         → PATCH
+  BREAKING    → MAJOR
+  chore/docs/ci/refactor/test → no version bump
 
 3) Changelog format
 -------------------
-- Use "Keep a Changelog" format in `CHANGELOG.md`.
-- Maintain an `Unreleased` section at the top. When cutting a release, move the Unreleased entries into a new heading `## [X.Y.Z] - YYYY-MM-DD` and tag the commit.
-- Keep entries grouped by type: Added, Changed, Fixed, Removed, Security.
+Use Keep a Changelog (https://keepachangelog.com) in CHANGELOG.md.
+Keep an `[Unreleased]` section at the top.
+When cutting a release, move Unreleased entries into `## [X.Y.Z] - YYYY-MM-DD` and tag the commit.
+Groups: Added, Changed, Fixed, Removed, Security.
 
-4) Enforcement (recommended)
----------------------------
-- This repo contains a sample commit-msg hook in `.githooks/commit-msg` (bash) and
-  `.githooks/commit-msg.ps1` (PowerShell). To enable locally run:
+4) Git hooks
+------------
+A commit-msg hook lives in `.githooks/`. Enable it locally:
 
-```powershell
-git config core.hooksPath .githooks
-```
+  git config core.hooksPath .githooks
 
-This causes Git to run the provided hook which rejects messages that don't match Conventional Commits.
-
-5) Release workflow (human-reviewed)
------------------------------------
-1. Ensure all commits since the previous release follow Conventional Commits.
-2. Update `CHANGELOG.md` Unreleased section with human-readable release notes.
-3. Bump the version (create a tag `vX.Y.Z` on the commit with changelog changes).
-4. Push tags and create a GitHub Release using the tag and the changelog entry as release notes.
-
-NOTE: The repository owner requested a potentially destructive historical rewrite workflow (relabeling/retagging every past release and force-pushing). That action rewrites history and must be explicitly authorized. It will require coordination with all collaborators and is NOT performed automatically by hooks in this repo.
-
-6) Automation suggestions
--------------------------
-- Add CI checks to ensure commit messages conform (e.g., a GitHub Actions job using a conventional-commit linter).
-- Add a release action that reads `CHANGELOG.md` to create GitHub Releases from the topmost unreleased section.
-
-7) Contact
-----------
-If you want me to proceed with history rewriting and full release recreation, reply with explicit consent and the GitHub auth method to use. Otherwise I will not force-push or delete releases.
+5) Release workflow
+-------------------
+1. Fill in CHANGELOG.md Unreleased section.
+2. Bump version in `MelonPlugin/Il2CppAssemblyFixerPlugin.csproj` (MelonInfo attribute).
+3. Commit: `chore(release): prepare v X.Y.Z`
+4. Tag: `git tag vX.Y.Z`
+5. Push branch and tag: `git push && git push --tags`
+6. CI builds and publishes the GitHub Release automatically.
