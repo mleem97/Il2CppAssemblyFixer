@@ -2,6 +2,8 @@
 
 Repairs corrupted IL2CPP assembly metadata in **Unity 6** games running **MelonLoader v0.7.2+**.
 
+[![.NET Build & Release](https://github.com/mleem97/Il2CppAssemblyFixer/actions/workflows/dotnet-desktop.yml/badge.svg)](https://github.com/mleem97/Il2CppAssemblyFixer/actions/workflows/dotnet-desktop.yml)
+
 ---
 
 ## The Problem
