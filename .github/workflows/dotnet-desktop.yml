@@ -11,153 +11,204 @@ env:
   # Base version for auto-tag scheme: <BASE>-U<run_number>
   VERSION_BASE: "1.50.3"
 
-jobs:
-  build:
-    runs-on: windows-latest
+permissions:
+  contents: write
 
+jobs:
+  # ── Decide where to run + compute the version once ───────────────────────
+  prepare:
+    runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      version:      ${{ steps.version.outputs.version }}
+      linux_runner: ${{ steps.pick.outputs.linux }}
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="${VERSION_BASE}-U${{ github.run_number }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION"
+
+      # Pick a self-hosted Linux runner if one is online + idle; otherwise fall
+      # back to GitHub-hosted ubuntu-latest. Listing self-hosted runners needs
+      # `administration:read`, which the default GITHUB_TOKEN lacks — supply a
+      # PAT as `SELF_HOSTED_RUNNER_PAT` to enable the check. Without it (or on
+      # API failure) we silently fall back to hosted.
+      - name: Pick runner (self-hosted with hosted fallback)
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.SELF_HOSTED_RUNNER_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          set +e
+          lin='["ubuntu-latest"]'
+
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "No SELF_HOSTED_RUNNER_PAT configured — using hosted runner."
+          else
+            json=$(gh api "repos/$REPO/actions/runners" --paginate 2>/dev/null)
+            if [[ -z "$json" ]]; then
+              echo "Runner API call failed — using hosted runner."
+            else
+              has_lin=$(echo "$json" | jq '[.runners[]
+                | select(.status=="online" and .busy==false)
+                | select(any(.labels[]; .name=="self-hosted"))
+                | select(any(.labels[]; (.name|ascii_downcase)=="linux"))
+              ] | length')
+              [[ "${has_lin:-0}" -gt 0 ]] && lin='["self-hosted","Linux","X64"]'
+            fi
+          fi
+
+          echo "linux=$lin" >> "$GITHUB_OUTPUT"
+          echo "Linux runner: $lin"
+
+  # ── Three variants in parallel (all built on Linux) ──────────────────────
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [ exe-win, exe-linux, plugin ]
+
+    runs-on: ${{ fromJSON(needs.prepare.outputs.linux_runner) }}
 
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0   # Need full history for previous-tag lookup
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Setup .NET 10
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '10.0.x'
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
 
-    - name: Setup .NET 6
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '6.0.x'
+      - name: Setup .NET 6
+        if: matrix.kind == 'plugin'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
 
-    - name: Cache NuGet packages
-      uses: actions/cache@v4
-      with:
-        path: ~/.nuget/packages
-        key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
-        restore-keys: |
-          ${{ runner.os }}-nuget-
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ matrix.kind }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-${{ matrix.kind }}-
+            ${{ runner.os }}-nuget-
 
-    - name: Determine version
-      id: version
-      shell: bash
-      run: |
-        if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-          VERSION="${GITHUB_REF#refs/tags/}"
-        else
-          VERSION="${VERSION_BASE}-U${{ github.run_number }}"
-        fi
-        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-        echo "Building version: $VERSION"
+      - name: Restore
+        run: dotnet restore Il2CppAssemblyFixer.sln
 
-    - name: Restore
-      run: dotnet restore Il2CppAssemblyFixer.sln
+      # ── EXE: Windows x64 (cross-published from Linux) ───────────────────
+      - name: Publish EXE win-x64
+        if: matrix.kind == 'exe-win'
+        run: |
+          dotnet publish Il2CppAssemblyFixer.csproj \
+            -c Release \
+            -r win-x64 \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:PublishTrimmed=false \
+            -o publish/win-x64
 
-    # ── EXE: Windows x64, self-contained single file ──────────────────────
-    - name: Publish EXE win-x64
-      run: |
-        dotnet publish Il2CppAssemblyFixer.csproj `
-          -c Release `
-          -r win-x64 `
-          --self-contained true `
-          -p:PublishSingleFile=true `
-          -p:PublishTrimmed=false `
-          -o publish/win-x64
+      # ── EXE: Linux x64 ──────────────────────────────────────────────────
+      - name: Publish EXE linux-x64
+        if: matrix.kind == 'exe-linux'
+        run: |
+          dotnet publish Il2CppAssemblyFixer.csproj \
+            -c Release \
+            -r linux-x64 \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:PublishTrimmed=false \
+            -o publish/linux-x64
 
-    # ── EXE: Linux x64, self-contained single file ────────────────────────
-    - name: Publish EXE linux-x64
-      run: |
-        dotnet publish Il2CppAssemblyFixer.csproj `
-          -c Release `
-          -r linux-x64 `
-          --self-contained true `
-          -p:PublishSingleFile=true `
-          -p:PublishTrimmed=false `
-          -o publish/linux-x64
+      # ── MelonLoader Plugin DLL (net6, framework-dependent) ──────────────
+      - name: Publish MelonLoader Plugin
+        if: matrix.kind == 'plugin'
+        run: |
+          dotnet publish MelonPlugin/Il2CppAssemblyFixerPlugin.csproj \
+            -c Release \
+            --self-contained false \
+            -o publish/plugin
 
-    # ── MelonLoader Plugin DLL (net6, framework-dependent) ────────────────
-    - name: Publish MelonLoader Plugin
-      run: |
-        dotnet publish MelonPlugin/Il2CppAssemblyFixerPlugin.csproj `
-          -c Release `
-          --self-contained false `
-          -o publish/plugin
+      # ── Ensure `zip` is available (preinstalled on hosted, may be missing on self-hosted)
+      - name: Ensure zip
+        run: |
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y zip
+          fi
 
-    # ── ZIPs ──────────────────────────────────────────────────────────────
-    - name: Create release assets
-      shell: pwsh
-      env:
-        VERSION: ${{ steps.version.outputs.version }}
-      run: |
-        New-Item -ItemType Directory -Force -Path assets | Out-Null
+      # ── Package ─────────────────────────────────────────────────────────
+      - name: Package exe-win
+        if: matrix.kind == 'exe-win'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir -p assets
+          (cd publish/win-x64 && zip -j "../../assets/Il2CppAssemblyFixer_${VERSION}_win-x64.zip" Il2CppAssemblyFixer.exe)
 
-        # Windows EXE
-        Compress-Archive `
-          -Path            "publish/win-x64/Il2CppAssemblyFixer.exe" `
-          -DestinationPath "assets/Il2CppAssemblyFixer_${env:VERSION}_win-x64.zip"
+      - name: Package exe-linux
+        if: matrix.kind == 'exe-linux'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir -p assets
+          (cd publish/linux-x64 && zip -j "../../assets/Il2CppAssemblyFixer_${VERSION}_linux-x64.zip" Il2CppAssemblyFixer)
 
-        # Linux EXE (no .exe extension on linux binary)
-        Compress-Archive `
-          -Path            "publish/linux-x64/Il2CppAssemblyFixer" `
-          -DestinationPath "assets/Il2CppAssemblyFixer_${env:VERSION}_linux-x64.zip"
+      - name: Package plugin
+        if: matrix.kind == 'plugin'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir -p assets
+          (cd publish/plugin && zip -j "../../assets/Il2CppAssemblyFixerPlugin_${VERSION}_MelonLoader.zip" \
+            Il2CppAssemblyFixerPlugin.dll \
+            dnlib.dll \
+            Mono.Cecil.dll)
 
-        # Plugin: only the three managed DLLs MelonLoader needs
-        $pluginFiles = Get-ChildItem "publish/plugin" -File |
-          Where-Object {
-            $_.Extension -eq ".dll" -and $_.Name -in @(
-              "Il2CppAssemblyFixerPlugin.dll",
-              "dnlib.dll",
-              "Mono.Cecil.dll"
-            )
-          }
-        Compress-Archive `
-          -Path            $pluginFiles.FullName `
-          -DestinationPath "assets/Il2CppAssemblyFixerPlugin_${env:VERSION}_MelonLoader.zip"
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: Il2CppAssemblyFixer-Build
-        path: assets/*.zip
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: assets-${{ matrix.kind }}
+          path: assets/*.zip
+          if-no-files-found: error
 
   # ── GitHub Release: every master push + every tag ─────────────────────
   release:
-    needs: build
+    needs: [prepare, build]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
-    - name: Download artifacts
+    - name: Download all build artifacts
       uses: actions/download-artifact@v4
       with:
-        name: Il2CppAssemblyFixer-Build
+        pattern: assets-*
+        merge-multiple: true
         path: ./
 
-    - name: Determine version + previous tag
+    - name: Determine previous tag
       id: meta
-      shell: bash
       run: |
-        VERSION="${{ needs.build.outputs.version }}"
+        VERSION="${{ needs.prepare.outputs.version }}"
 
-        # Fetch all tags so we can list them
         git fetch --tags --force --prune || true
 
-        # Find the most recent tag that isn't this one
         PREV_TAG=$(git tag --list --sort=-creatordate \
                    | grep -v "^${VERSION}\$" \
                    | head -n 1)
 
         if [[ -z "$PREV_TAG" ]]; then
-          # No prior tag → compare against initial commit
           PREV_TAG=$(git rev-list --max-parents=0 HEAD | head -n 1)
         fi
 

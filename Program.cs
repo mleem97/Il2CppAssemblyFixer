@@ -98,9 +98,23 @@ class Program
     static int _errors              = 0;
 
     // ── Assembly filter ────────────────────────────────────────────────────
-    static readonly HashSet<string> SkipAssemblies = new(StringComparer.OrdinalIgnoreCase)
+    // Never processed — re-encoding these breaks runtime bootstrap.
+    static readonly HashSet<string> NeverTouchAssemblies = new(StringComparer.OrdinalIgnoreCase)
     {
-        // Unity Core — never touch
+        "Il2CppInterop.Runtime.dll",
+        "Il2Cppmscorlib.dll",
+        "netstandard.dll",
+        "mscorlib.dll",
+        "UnityExplorer.ML.IL2CPP.CoreCLR.dll",
+        "UniverseLib.ML.IL2CPP.Interop.dll",
+    };
+
+    // Processed only in conservative mode: compiler-generated duplicates (`<>…`) are
+    // removed (e.g. `<>O` / `<>c` cache classes that Cpp2IL sometimes emits twice on
+    // certain game versions, causing BadImageFormatException at load time), but no
+    // Cecil rewrite happens unless dnlib actually changed something.
+    static readonly HashSet<string> ConservativeAssemblies = new(StringComparer.OrdinalIgnoreCase)
+    {
         "UnityEngine.CoreModule.dll",
         "UnityEngine.UIElementsModule.dll",
         "UnityEngine.IMGUIModule.dll",
@@ -108,14 +122,6 @@ class Program
         "UnityEngine.InputSystem.dll",
         "UnityEngine.AssetBundleModule.dll",
         "UnityEngine.SceneManagement.dll",
-        // Interop & Loader
-        "Il2CppInterop.Runtime.dll",
-        "Il2Cppmscorlib.dll",
-        "netstandard.dll",
-        "mscorlib.dll",
-        // UnityExplorer & UniverseLib
-        "UnityExplorer.ML.IL2CPP.CoreCLR.dll",
-        "UniverseLib.ML.IL2CPP.Interop.dll",
     };
 
     sealed class ReferenceComparer<T> : IEqualityComparer<T> where T : class
@@ -126,7 +132,19 @@ class Program
 
     static bool ShouldProcessAssembly(string path)
     {
-        return !SkipAssemblies.Contains(Path.GetFileName(path));
+        return !NeverTouchAssemblies.Contains(Path.GetFileName(path));
+    }
+
+    static bool IsConservative(string path)
+    {
+        return ConservativeAssemblies.Contains(Path.GetFileName(path));
+    }
+
+    // Compiler-generated nested types: `<>O`, `<>c`, `<>c__DisplayClass…`, etc.
+    static bool IsCompilerGenerated(DN.TypeDef type)
+    {
+        string name = type.Name;
+        return name.Length >= 2 && name[0] == '<';
     }
 
     // ── Structured log helpers ─────────────────────────────────────────────
@@ -187,7 +205,8 @@ class Program
             _assembliesProcessed++;
             try
             {
-                ProcessAssembly(dllPath, forceRewrite);
+                bool conservative = IsConservative(dllPath);
+                ProcessAssembly(dllPath, forceRewrite && !conservative, conservative);
             }
             catch (Exception ex)
             {
@@ -623,10 +642,10 @@ class Program
     }
 
     // ── Steps 4 & 5: Process a single assembly ─────────────────────────────
-    static void ProcessAssembly(string path, bool forceRewrite)
+    static void ProcessAssembly(string path, bool forceRewrite, bool conservative = false)
     {
         string fileName = Path.GetFileName(path);
-        Info($"─── Processing: {fileName} ───");
+        Info($"─── Processing: {fileName}{(conservative ? "  [conservative]" : "")} ───");
 
         byte[] data     = File.ReadAllBytes(path);
         bool   modified = false;
@@ -646,6 +665,12 @@ class Program
 
                 if (duplicates.Count < 2)
                     continue;
+
+                if (conservative && !duplicates.All(IsCompilerGenerated))
+                {
+                    Debug($"[dnlib] Conservative: skipping non-compiler-generated duplicate group '{group.Key}'.");
+                    continue;
+                }
 
                 int referencedCopies = duplicates.Count(type => referenceCounts.TryGetValue(type, out int count) && count > 0);
                 if (referencedCopies > 1)
