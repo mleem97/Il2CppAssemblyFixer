@@ -168,9 +168,21 @@ jobs:
           )
           pathlib.Path("bundle/fixer_config.json").write_text(tpl)
           PY
-          if [[ -z "$TELEMETRY_ENDPOINT" ]]; then
-            echo "::warning::TELEMETRY_ENDPOINT secret is empty — shipped config will have telemetry no-op."
+
+          # ── Verify the substitution actually happened ──────────────────────
+          # We fail loudly here instead of shipping a half-broken config.
+          if grep -q "__TELEMETRY_" bundle/fixer_config.json; then
+            echo "::error::Placeholder still present in bundle/fixer_config.json — substitution did not run."
+            grep "__TELEMETRY_" bundle/fixer_config.json | sed 's/.*\(__TELEMETRY_[A-Z_]*__\).*/  surviving placeholder: \1/'
+            exit 1
           fi
+          # Endpoint must be non-empty in the shipped config (otherwise telemetry
+          # would just no-op for every user).
+          if ! python3 -c "import json,sys; sys.exit(0 if json.load(open('bundle/fixer_config.json'))['telemetry']['endpoint'] else 1)"; then
+            echo "::error::telemetry.endpoint is empty in the shipped config — TELEMETRY_ENDPOINT secret is not set or not visible to this job."
+            exit 1
+          fi
+          echo "Bundle config OK (endpoint populated, no placeholders left)."
 
       # ── Package ─────────────────────────────────────────────────────────
       - name: Package exe-win
