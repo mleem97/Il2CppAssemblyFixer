@@ -128,10 +128,37 @@ internal static class Telemetry
         else                            evt.Outcome = "failed";
     }
 
+    /// <summary>
+    /// Effective telemetry settings after merging user-config with the
+    /// build-time defaults from <see cref="TelemetryDefaults"/>. User-config
+    /// always wins — empty fields fall back to the embedded defaults.
+    /// </summary>
+    private sealed class Resolved
+    {
+        public string Endpoint { get; }
+        public string Username { get; }
+        public string ApiKey   { get; }
+        public string TenantId { get; }
+        public string Format   { get; }
+        public int    TimeoutSeconds { get; }
+
+        public Resolved(FixerConfig.TelemetrySection cfg)
+        {
+            Endpoint = !string.IsNullOrWhiteSpace(cfg.Endpoint) ? cfg.Endpoint : TelemetryDefaults.Resolve(TelemetryDefaults.Endpoint);
+            Username = !string.IsNullOrEmpty(cfg.Username)      ? cfg.Username : TelemetryDefaults.Resolve(TelemetryDefaults.Username);
+            ApiKey   = !string.IsNullOrEmpty(cfg.ApiKey)        ? cfg.ApiKey   : TelemetryDefaults.Resolve(TelemetryDefaults.ApiKey);
+            TenantId = !string.IsNullOrEmpty(cfg.TenantId)      ? cfg.TenantId : TelemetryDefaults.Resolve(TelemetryDefaults.TenantId);
+            Format   = string.IsNullOrEmpty(cfg.Format) ? "loki" : cfg.Format;
+            TimeoutSeconds = Math.Max(1, cfg.TimeoutSeconds);
+        }
+    }
+
     public static void Send(FixerConfig.TelemetrySection cfg, Event evt, Action<string>? logLine)
     {
         if (!cfg.Enabled) return;
-        if (string.IsNullOrWhiteSpace(cfg.Endpoint))
+
+        var r = new Resolved(cfg);
+        if (string.IsNullOrWhiteSpace(r.Endpoint))
         {
             logLine?.Invoke("[telemetry] enabled but no endpoint configured — skipping.");
             return;
@@ -150,22 +177,15 @@ internal static class Telemetry
 
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(Math.Max(1, cfg.TimeoutSeconds)) };
-            HttpRequestMessage req;
-
-            if (string.Equals(cfg.Format, "loki", StringComparison.OrdinalIgnoreCase))
-            {
-                req = BuildLokiRequest(cfg, evt);
-            }
-            else
-            {
-                req = BuildJsonRequest(cfg, evt);
-            }
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(r.TimeoutSeconds) };
+            HttpRequestMessage req = string.Equals(r.Format, "loki", StringComparison.OrdinalIgnoreCase)
+                ? BuildLokiRequest(r, evt)
+                : BuildJsonRequest(r, evt);
 
             using var resp = http.Send(req);
             int status = (int)resp.StatusCode;
             if (status >= 200 && status < 300)
-                logLine?.Invoke($"[telemetry] sent ({cfg.Format}, HTTP {status}).");
+                logLine?.Invoke($"[telemetry] sent ({r.Format}, HTTP {status}).");
             else
                 logLine?.Invoke($"[telemetry] endpoint replied HTTP {status}.");
         }
@@ -181,19 +201,19 @@ internal static class Telemetry
         WriteIndented        = false,
     };
 
-    private static HttpRequestMessage BuildJsonRequest(FixerConfig.TelemetrySection cfg, Event evt)
+    private static HttpRequestMessage BuildJsonRequest(Resolved r, Event evt)
     {
         string body = JsonSerializer.Serialize(evt, JsonOpts);
-        var req = new HttpRequestMessage(HttpMethod.Post, cfg.Endpoint)
+        var req = new HttpRequestMessage(HttpMethod.Post, r.Endpoint)
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
-        if (!string.IsNullOrEmpty(cfg.ApiKey))
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cfg.ApiKey);
+        if (!string.IsNullOrEmpty(r.ApiKey))
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", r.ApiKey);
         return req;
     }
 
-    private static HttpRequestMessage BuildLokiRequest(FixerConfig.TelemetrySection cfg, Event evt)
+    private static HttpRequestMessage BuildLokiRequest(Resolved r, Event evt)
     {
         // Loki push v1:  { "streams": [ { "stream": {labels}, "values": [["<unixns>", "<line>"]] } ] }
         long unixNs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L;
@@ -221,18 +241,18 @@ internal static class Telemetry
         };
 
         string body = JsonSerializer.Serialize(payload, JsonOpts);
-        var req = new HttpRequestMessage(HttpMethod.Post, cfg.Endpoint)
+        var req = new HttpRequestMessage(HttpMethod.Post, r.Endpoint)
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
-        if (!string.IsNullOrEmpty(cfg.Username) || !string.IsNullOrEmpty(cfg.ApiKey))
+        if (!string.IsNullOrEmpty(r.Username) || !string.IsNullOrEmpty(r.ApiKey))
         {
-            string raw  = $"{cfg.Username}:{cfg.ApiKey}";
+            string raw  = $"{r.Username}:{r.ApiKey}";
             string b64  = Convert.ToBase64String(Encoding.UTF8.GetBytes(raw));
             req.Headers.Authorization = new AuthenticationHeaderValue("Basic", b64);
         }
-        if (!string.IsNullOrEmpty(cfg.TenantId))
-            req.Headers.TryAddWithoutValidation("X-Scope-OrgID", cfg.TenantId);
+        if (!string.IsNullOrEmpty(r.TenantId))
+            req.Headers.TryAddWithoutValidation("X-Scope-OrgID", r.TenantId);
         return req;
     }
 }

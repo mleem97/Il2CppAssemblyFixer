@@ -72,7 +72,13 @@ public class FixerPlugin : MelonPlugin
         string? mlDir = SafeGetMelonLoaderDir();
         if (!string.IsNullOrEmpty(mlDir))
         {
-            _config = FixerConfig.LoadOrCreate(mlDir!, w => Warn($"[Il2CppAssemblyFixer] {w}"));
+            string? pluginDir = null;
+            try { pluginDir = Path.GetDirectoryName(typeof(FixerPlugin).Assembly.Location); } catch { }
+            _config = FixerConfig.LoadOrCreate(
+                mlDir!,
+                w => Warn($"[Il2CppAssemblyFixer] {w}"),
+                pluginDir ?? "",
+                AppDomain.CurrentDomain.BaseDirectory);
             if (_config.Logging.WriteLogFile)
                 _logFile = new FileLogger(mlDir!, _config.Logging.LogFileName, "Il2CppAssemblyFixer (Plugin)");
         }

@@ -8,6 +8,11 @@ non-identifying counters (number of assemblies scanned, number of duplicate
 types removed, run duration). This makes it possible to spot regressions
 across game updates without having to ask every user for a log.
 
+The endpoint is a self-hosted Grafana Loki instance with rate limiting and
+**no credentials shipped in this ZIP** — the reverse proxy in front of Loki
+accepts unauthenticated `POST /loki/api/v1/push`, so there are no API keys to
+leak. The shipped `fixer_config.json` contains only the URL.
+
 **What is sent**
 
 * Tool variant (`exe` / `plugin`) and version

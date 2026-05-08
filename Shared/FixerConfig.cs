@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -73,22 +74,40 @@ internal sealed class FixerConfig
         AllowTrailingCommas        = true,
     };
 
-    /// <summary>Load (or create with defaults) the config file in the given dir.</summary>
-    public static FixerConfig LoadOrCreate(string melonLoaderDir, Action<string>? warn = null)
+    /// <summary>
+    /// Load (or create with defaults) the config file in the given dir.
+    ///
+    /// If no config exists at the target location, the loader will look for a
+    /// shipped copy in <paramref name="seedSearchDirs"/> (e.g. next to the EXE
+    /// or next to the plugin DLL) and use it as a seed before falling back to
+    /// hardcoded defaults. This way the pre-populated fixer_config.json that
+    /// ships in every release ZIP is actually applied, even when the user has
+    /// never edited the per-game copy.
+    /// </summary>
+    public static FixerConfig LoadOrCreate(
+        string melonLoaderDir,
+        Action<string>? warn = null,
+        params string[] seedSearchDirs)
     {
         string path = Path.Combine(melonLoaderDir, FileName);
         FixerConfig cfg;
+        bool seeded = false;
 
-        if (File.Exists(path))
+        string? sourcePath = File.Exists(path) ? path : FindSeed(path, seedSearchDirs);
+
+        if (sourcePath != null)
         {
             try
             {
-                string json = File.ReadAllText(path);
+                string json = File.ReadAllText(sourcePath);
                 cfg = JsonSerializer.Deserialize<FixerConfig>(json, JsonOpts) ?? new FixerConfig();
+                seeded = !string.Equals(sourcePath, path, StringComparison.OrdinalIgnoreCase);
+                if (seeded)
+                    warn?.Invoke($"Seeded {FileName} from shipped copy: {sourcePath}");
             }
             catch (Exception ex)
             {
-                warn?.Invoke($"Could not parse {FileName}: {ex.Message}. Using defaults.");
+                warn?.Invoke($"Could not parse {sourcePath}: {ex.Message}. Using defaults.");
                 cfg = new FixerConfig();
             }
         }
@@ -97,7 +116,7 @@ internal sealed class FixerConfig
             cfg = new FixerConfig();
         }
 
-        bool dirty = false;
+        bool dirty = seeded;
         if (string.IsNullOrWhiteSpace(cfg.Telemetry.AnonymousId))
         {
             cfg.Telemetry.AnonymousId = Guid.NewGuid().ToString("N");
@@ -111,5 +130,21 @@ internal sealed class FixerConfig
         }
 
         return cfg;
+    }
+
+    private static string? FindSeed(string targetPath, IEnumerable<string> seedSearchDirs)
+    {
+        foreach (string dir in seedSearchDirs)
+        {
+            if (string.IsNullOrEmpty(dir)) continue;
+            string candidate = Path.Combine(dir, FileName);
+            if (!File.Exists(candidate)) continue;
+            // Don't seed from the target itself.
+            if (string.Equals(Path.GetFullPath(candidate),
+                              Path.GetFullPath(targetPath),
+                              StringComparison.OrdinalIgnoreCase)) continue;
+            return candidate;
+        }
+        return null;
     }
 }

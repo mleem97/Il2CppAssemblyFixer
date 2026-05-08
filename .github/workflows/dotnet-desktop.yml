@@ -104,6 +104,23 @@ jobs:
       - name: Restore
         run: dotnet restore Il2CppAssemblyFixer.sln
 
+      # ── Embed telemetry credentials into the C# source BEFORE publish ───
+      # Substitutes the __TELEMETRY_*__ placeholders in Shared/TelemetryDefaults.cs
+      # with the matching repo secrets. The compiled assembly then carries the
+      # values as plain string literals — security through obscurity only; the
+      # real abuse mitigation (rate limit + CrowdSec) lives at the ingest side.
+      # If a secret is unset, its placeholder stays unsubstituted and the
+      # runtime's Resolve() helper turns it back into an empty string at use
+      # time, so local builds and unconfigured forks just no-op cleanly.
+      - name: Embed telemetry defaults
+        env:
+          TELEMETRY_ENDPOINT:  ${{ secrets.TELEMETRY_ENDPOINT  }}
+          TELEMETRY_USERNAME:  ${{ secrets.TELEMETRY_USERNAME  }}
+          TELEMETRY_API_KEY:   ${{ secrets.TELEMETRY_API_KEY   }}
+          TELEMETRY_TENANT_ID: ${{ secrets.TELEMETRY_TENANT_ID }}
+        run: |
+          python3 scripts/embed_telemetry_defaults.py Shared/TelemetryDefaults.cs
+
       # ── EXE: Windows x64 (cross-published from Linux) ───────────────────
       - name: Publish EXE win-x64
         if: matrix.kind == 'exe-win'
@@ -144,45 +161,16 @@ jobs:
             sudo apt-get update && sudo apt-get install -y zip
           fi
 
-      # ── Inject telemetry credentials into the shipped fixer_config.json ──
-      # If the secrets are not set the placeholders simply become empty strings,
-      # which makes Telemetry.Send a no-op (logged & skipped). No build failure.
+      # ── Assemble the bundle (config + readme) ───────────────────────────
+      # The shipped fixer_config.json has all telemetry fields blank; users
+      # who want to override anything (e.g. point at a private Loki) can fill
+      # them locally. The actual production endpoint+creds live as embedded
+      # constants in the assembly (see "Embed telemetry defaults" above).
       - name: Prepare bundle (config + readme)
-        env:
-          TELEMETRY_ENDPOINT:  ${{ secrets.TELEMETRY_ENDPOINT  }}
-          TELEMETRY_USERNAME:  ${{ secrets.TELEMETRY_USERNAME  }}
-          TELEMETRY_API_KEY:   ${{ secrets.TELEMETRY_API_KEY   }}
-          TELEMETRY_TENANT_ID: ${{ secrets.TELEMETRY_TENANT_ID }}
         run: |
           mkdir -p bundle
-          cp README_TELEMETRY.md bundle/README.md
-          # Use python for safe substitution (no escaping issues with URLs / keys).
-          python3 - <<'PY'
-          import os, pathlib
-          tpl = pathlib.Path("fixer_config.json").read_text()
-          tpl = (tpl
-            .replace("__TELEMETRY_ENDPOINT__",  os.environ.get("TELEMETRY_ENDPOINT", ""))
-            .replace("__TELEMETRY_USERNAME__",  os.environ.get("TELEMETRY_USERNAME", ""))
-            .replace("__TELEMETRY_API_KEY__",   os.environ.get("TELEMETRY_API_KEY",  ""))
-            .replace("__TELEMETRY_TENANT_ID__", os.environ.get("TELEMETRY_TENANT_ID",""))
-          )
-          pathlib.Path("bundle/fixer_config.json").write_text(tpl)
-          PY
-
-          # ── Verify the substitution actually happened ──────────────────────
-          # We fail loudly here instead of shipping a half-broken config.
-          if grep -q "__TELEMETRY_" bundle/fixer_config.json; then
-            echo "::error::Placeholder still present in bundle/fixer_config.json — substitution did not run."
-            grep "__TELEMETRY_" bundle/fixer_config.json | sed 's/.*\(__TELEMETRY_[A-Z_]*__\).*/  surviving placeholder: \1/'
-            exit 1
-          fi
-          # Endpoint must be non-empty in the shipped config (otherwise telemetry
-          # would just no-op for every user).
-          if ! python3 -c "import json,sys; sys.exit(0 if json.load(open('bundle/fixer_config.json'))['telemetry']['endpoint'] else 1)"; then
-            echo "::error::telemetry.endpoint is empty in the shipped config — TELEMETRY_ENDPOINT secret is not set or not visible to this job."
-            exit 1
-          fi
-          echo "Bundle config OK (endpoint populated, no placeholders left)."
+          cp README_TELEMETRY.md   bundle/README.md
+          cp fixer_config.json     bundle/fixer_config.json
 
       # ── Package ─────────────────────────────────────────────────────────
       - name: Package exe-win

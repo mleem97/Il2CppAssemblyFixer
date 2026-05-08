@@ -197,7 +197,8 @@ class Program
 
         // ── Config + log file (both live in <GameRoot>/MelonLoader, next to Latest.log)
         string melonLoaderDir = Path.GetFullPath(Path.Combine(targetDir, ".."));
-        _config  = FixerConfig.LoadOrCreate(melonLoaderDir, msg => Warn(msg));
+        _config  = FixerConfig.LoadOrCreate(melonLoaderDir, msg => Warn(msg),
+                                            AppContext.BaseDirectory);
         if (_config.Logging.WriteLogFile)
         {
             _logFile = new FileLogger(melonLoaderDir, _config.Logging.LogFileName, "Il2CppAssemblyFixer (EXE)");
