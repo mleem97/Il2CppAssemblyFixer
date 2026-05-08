@@ -144,33 +144,72 @@ jobs:
             sudo apt-get update && sudo apt-get install -y zip
           fi
 
+      # ── Inject telemetry credentials into the shipped fixer_config.json ──
+      # If the secrets are not set the placeholders simply become empty strings,
+      # which makes Telemetry.Send a no-op (logged & skipped). No build failure.
+      - name: Prepare bundle (config + readme)
+        env:
+          TELEMETRY_ENDPOINT:  ${{ secrets.TELEMETRY_ENDPOINT  }}
+          TELEMETRY_USERNAME:  ${{ secrets.TELEMETRY_USERNAME  }}
+          TELEMETRY_API_KEY:   ${{ secrets.TELEMETRY_API_KEY   }}
+          TELEMETRY_TENANT_ID: ${{ secrets.TELEMETRY_TENANT_ID }}
+        run: |
+          mkdir -p bundle
+          cp README_TELEMETRY.md bundle/README.md
+          # Use python for safe substitution (no escaping issues with URLs / keys).
+          python3 - <<'PY'
+          import os, pathlib
+          tpl = pathlib.Path("fixer_config.json").read_text()
+          tpl = (tpl
+            .replace("__TELEMETRY_ENDPOINT__",  os.environ.get("TELEMETRY_ENDPOINT", ""))
+            .replace("__TELEMETRY_USERNAME__",  os.environ.get("TELEMETRY_USERNAME", ""))
+            .replace("__TELEMETRY_API_KEY__",   os.environ.get("TELEMETRY_API_KEY",  ""))
+            .replace("__TELEMETRY_TENANT_ID__", os.environ.get("TELEMETRY_TENANT_ID",""))
+          )
+          pathlib.Path("bundle/fixer_config.json").write_text(tpl)
+          PY
+          if [[ -z "$TELEMETRY_ENDPOINT" ]]; then
+            echo "::warning::TELEMETRY_ENDPOINT secret is empty — shipped config will have telemetry no-op."
+          fi
+
       # ── Package ─────────────────────────────────────────────────────────
       - name: Package exe-win
         if: matrix.kind == 'exe-win'
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          mkdir -p assets
-          (cd publish/win-x64 && zip -j "../../assets/Il2CppAssemblyFixer_${VERSION}_win-x64.zip" Il2CppAssemblyFixer.exe)
+          mkdir -p assets staging
+          cp publish/win-x64/Il2CppAssemblyFixer.exe staging/
+          cp bundle/fixer_config.json staging/
+          cp bundle/README.md staging/
+          (cd staging && zip -j "../assets/Il2CppAssemblyFixer_${VERSION}_win-x64.zip" *)
+          rm -rf staging
 
       - name: Package exe-linux
         if: matrix.kind == 'exe-linux'
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          mkdir -p assets
-          (cd publish/linux-x64 && zip -j "../../assets/Il2CppAssemblyFixer_${VERSION}_linux-x64.zip" Il2CppAssemblyFixer)
+          mkdir -p assets staging
+          cp publish/linux-x64/Il2CppAssemblyFixer staging/
+          cp bundle/fixer_config.json staging/
+          cp bundle/README.md staging/
+          (cd staging && zip -j "../assets/Il2CppAssemblyFixer_${VERSION}_linux-x64.zip" *)
+          rm -rf staging
 
       - name: Package plugin
         if: matrix.kind == 'plugin'
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          mkdir -p assets
-          (cd publish/plugin && zip -j "../../assets/Il2CppAssemblyFixerPlugin_${VERSION}_MelonLoader.zip" \
-            Il2CppAssemblyFixerPlugin.dll \
-            dnlib.dll \
-            Mono.Cecil.dll)
+          mkdir -p assets staging
+          cp publish/plugin/Il2CppAssemblyFixerPlugin.dll staging/
+          cp publish/plugin/dnlib.dll                     staging/
+          cp publish/plugin/Mono.Cecil.dll                staging/
+          cp bundle/fixer_config.json staging/
+          cp bundle/README.md staging/
+          (cd staging && zip -j "../assets/Il2CppAssemblyFixerPlugin_${VERSION}_MelonLoader.zip" *)
+          rm -rf staging
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

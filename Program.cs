@@ -12,6 +12,7 @@ using Microsoft.Win32;
 using DN = dnlib.DotNet;
 using DNEmit = dnlib.DotNet.Emit;
 using Cecil = Mono.Cecil;
+using Il2CppAssemblyFixer.Shared;
 
 namespace Il2CppAssemblyFixer;
 
@@ -96,6 +97,7 @@ class Program
     static int _typesRemoved        = 0;
     static int _rewritesPerformed   = 0;
     static int _errors              = 0;
+    static readonly List<Telemetry.AssemblyDetail> _assemblyDetails = new();
 
     // ── Assembly filter ────────────────────────────────────────────────────
     // Never processed — re-encoding these breaks runtime bootstrap.
@@ -148,11 +150,21 @@ class Program
     }
 
     // ── Structured log helpers ─────────────────────────────────────────────
-    static void Info   (string msg) => Console.WriteLine($"[INFO]    {msg}");
-    static void Debug  (string msg) => Console.WriteLine($"[DEBUG]   {msg}");
-    static void Warn   (string msg) => Console.WriteLine($"[WARN]    {msg}");
-    static void Success(string msg) => Console.WriteLine($"[SUCCESS] {msg}");
-    static void Error  (string msg) => Console.Error  .WriteLine($"[ERROR]   {msg}");
+    static FileLogger? _logFile;
+    static FixerConfig? _config;
+
+    static void WriteLog(string line, bool toStderr)
+    {
+        if (toStderr) Console.Error.WriteLine(line);
+        else          Console.WriteLine(line);
+        _logFile?.WriteLine(line);
+    }
+
+    static void Info   (string msg) => WriteLog($"[INFO]    {msg}", false);
+    static void Debug  (string msg) => WriteLog($"[DEBUG]   {msg}", false);
+    static void Warn   (string msg) => WriteLog($"[WARN]    {msg}", false);
+    static void Success(string msg) => WriteLog($"[SUCCESS] {msg}", false);
+    static void Error  (string msg) => WriteLog($"[ERROR]   {msg}", true);
 
     // ── Entry point ────────────────────────────────────────────────────────
     static int Main(string[] args)
@@ -183,10 +195,25 @@ class Program
 
         Info($"Target directory resolved: {targetDir}");
 
+        // ── Config + log file (both live in <GameRoot>/MelonLoader, next to Latest.log)
+        string melonLoaderDir = Path.GetFullPath(Path.Combine(targetDir, ".."));
+        _config  = FixerConfig.LoadOrCreate(melonLoaderDir, msg => Warn(msg));
+        if (_config.Logging.WriteLogFile)
+        {
+            _logFile = new FileLogger(melonLoaderDir, _config.Logging.LogFileName, "Il2CppAssemblyFixer (EXE)");
+            if (_logFile.Path != null) Info($"Log file: {_logFile.Path}");
+        }
+        Info(_config.Telemetry.Enabled
+            ? $"Telemetry enabled → {_config.Telemetry.Endpoint} ({_config.Telemetry.Format})"
+            : "Telemetry disabled (opt-in via fixer_config.json).");
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         bool restoreBackups = args.Any(a => a.Equals("--restore", StringComparison.OrdinalIgnoreCase));
         if (restoreBackups)
         {
             RestoreAllBackups(targetDir);
+            _logFile?.Dispose();
             return 0;
         }
 
@@ -230,7 +257,32 @@ class Program
             }
         }
 
+        sw.Stop();
+        SendTelemetry(sw.ElapsedMilliseconds);
+        _logFile?.Dispose();
         return _errors > 0 ? 2 : 0;
+    }
+
+    static void SendTelemetry(long durationMs)
+    {
+        if (_config == null) return;
+        var evt = new Telemetry.Event
+        {
+            Variant            = "exe",
+            Version            = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown",
+            AssembliesScanned  = _assembliesProcessed,
+            AssembliesModified = _assembliesModified,
+            AssembliesSkipped  = Math.Max(0, _assembliesProcessed - _assembliesModified - _errors),
+            TypesRemoved       = _typesRemoved,
+            RewritesPerformed  = _rewritesPerformed,
+            Errors             = _errors,
+            DurationMs         = durationMs,
+            MachineKey         = _config.Telemetry.AnonymousId,
+            Assemblies         = _assemblyDetails,
+        };
+        Telemetry.PopulateEnvironment(evt);
+        Telemetry.DeriveOutcome(evt);
+        Telemetry.Send(_config.Telemetry, evt, line => Info(line));
     }
 
     // ── Step 1: Trigger MelonLoader AGF regeneration ───────────────────────
@@ -649,6 +701,8 @@ class Program
 
         byte[] data     = File.ReadAllBytes(path);
         bool   modified = false;
+        int    removedHere = 0;
+        bool   rewrittenHere = false;
 
         // ── Phase 4: dnlib – duplicate type removal ───────────────────────
         Debug($"[dnlib] Loading assembly: {fileName}");
@@ -699,6 +753,7 @@ class Program
                         module.Types.Remove(t);
 
                     _typesRemoved++;
+                    removedHere++;
                     Success($"[dnlib] Removed duplicate type: '{removedName}'");
                 }
 
@@ -732,6 +787,7 @@ class Program
                 asm.Write(msOut);
                 data = msOut.ToArray();
                 _rewritesPerformed++;
+                rewrittenHere = true;
                 Success($"[Cecil] Metadata normalization complete for '{fileName}'.");
             }
             catch (Exception ex)
@@ -751,6 +807,17 @@ class Program
         else
         {
             Info($"No changes required for '{fileName}' – skipped.");
+        }
+
+        if (removedHere > 0 || rewrittenHere)
+        {
+            _assemblyDetails.Add(new Telemetry.AssemblyDetail
+            {
+                Name         = fileName,
+                TypesRemoved = removedHere,
+                Rewritten    = rewrittenHere,
+                Conservative = conservative,
+            });
         }
     }
 

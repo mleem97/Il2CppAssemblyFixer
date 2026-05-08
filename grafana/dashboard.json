@@ -1,0 +1,557 @@
+{
+  "title": "Il2CppAssemblyFixer Telemetry",
+  "tags": ["fixer", "telemetry", "loki"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "1m",
+  "editable": false,
+  "time": { "from": "now-7d", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "loki",
+        "refresh": 1,
+        "hide": 0,
+        "current": { "selected": false, "text": "Loki", "value": "Loki" }
+      },
+      {
+        "name": "variant",
+        "label": "Variant",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "${datasource}" },
+        "query": "label_values({app=\"il2cpp-assembly-fixer\"}, variant)",
+        "refresh": 2, "includeAll": true, "multi": true,
+        "current": { "selected": true, "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "os",
+        "label": "OS",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "${datasource}" },
+        "query": "label_values({app=\"il2cpp-assembly-fixer\"}, os)",
+        "refresh": 2, "includeAll": true, "multi": true,
+        "current": { "selected": true, "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "version",
+        "label": "Tool version",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "${datasource}" },
+        "query": "label_values({app=\"il2cpp-assembly-fixer\"}, version)",
+        "refresh": 2, "includeAll": true, "multi": true,
+        "current": { "selected": true, "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "outcome",
+        "label": "Outcome",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "${datasource}" },
+        "query": "label_values({app=\"il2cpp-assembly-fixer\"}, outcome)",
+        "refresh": 2, "includeAll": true, "multi": true,
+        "current": { "selected": true, "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    { "type": "row", "title": "Aktivität", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "collapsed": false, "panels": [] },
+
+    {
+      "title": "Tool-Aufrufe (nach Variante)",
+      "description": "Anzahl der Telemetrie-Events pro Variant (exe / plugin) im Zeitverlauf.",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (variant) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\", outcome=~\"$outcome\"}[$__auto]))",
+          "refId": "A", "legendFormat": "{{variant}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 1 } } }
+    },
+    {
+      "title": "Aufgetretene Fehler",
+      "description": "Summe des JSON-Felds 'errors' aus den Telemetrie-Events; bündelt alle Variants/OS gemäß Filter.",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap errors [$__auto])",
+          "refId": "A", "legendFormat": "Errors"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "red" },
+          "custom": { "drawStyle": "bars", "fillOpacity": 80 }
+        }
+      }
+    },
+
+    { "type": "row", "title": "KPIs", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }, "collapsed": false, "panels": [] },
+
+    {
+      "title": "Gesamtaufrufe (Range)",
+      "description": "Anzahl aller eingegangenen Telemetrie-Events im aktuellen Zeitraum.",
+      "type": "stat",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 10 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum(count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\", outcome=~\"$outcome\"}[$__auto]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "blue" }, "unit": "short" } },
+      "options": { "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false } }
+    },
+    {
+      "title": "Eindeutige Installationen",
+      "description": "Anzahl unterschiedlicher anonymousId-Werte (machineKey-Label nach JSON-Parse) im Zeitraum.",
+      "type": "stat",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 10 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "count(sum by (machineKey) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\", outcome=~\"$outcome\"} | json | machineKey != \"\" [$__auto])))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "purple" }, "unit": "short" } },
+      "options": { "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["max"], "fields": "", "values": false } }
+    },
+    {
+      "title": "Erfolgsquote",
+      "description": "Anteil der Läufe mit outcome=success an der Gesamtzahl im Zeitraum.",
+      "type": "gauge",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 10 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum(count_over_time({app=\"il2cpp-assembly-fixer\", outcome=\"success\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"}[$__auto])) / sum(count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"}[$__auto])) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red",    "value": null },
+            { "color": "orange", "value": 80 },
+            { "color": "green",  "value": 95 }
+          ]}
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["mean"], "fields": "", "values": false } }
+    },
+    {
+      "title": "Fehlerquote (Errors / Run)",
+      "description": "Σ errors geteilt durch Σ runs × 100. Zeigt durchschnittliche Fehler pro Lauf in %.",
+      "type": "gauge",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 10 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum(sum_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap errors [$__auto])) / sum(count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"}[$__auto])) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green",  "value": null },
+            { "color": "orange", "value": 5 },
+            { "color": "red",    "value": 20 }
+          ]}
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["mean"], "fields": "", "values": false } }
+    },
+    {
+      "title": "Σ entfernte Duplikate",
+      "description": "Summe aller in Telemetrie-Events gemeldeten typesRemoved-Werte im Zeitraum.",
+      "type": "stat",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 10 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum(sum_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap typesRemoved [$__auto]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "yellow" }, "unit": "short" } },
+      "options": { "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false } }
+    },
+    {
+      "title": "Σ Cecil-Rewrites",
+      "description": "Wie oft Mono.Cecil eine DLL nach dnlib-Änderungen neu geschrieben hat (Summe über alle Läufe).",
+      "type": "stat",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 10 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum(sum_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap rewritesPerformed [$__auto]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "orange" }, "unit": "short" } },
+      "options": { "graphMode": "area", "colorMode": "value", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false } }
+    },
+
+    { "type": "row", "title": "Run-Klassifizierung", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 }, "collapsed": false, "panels": [] },
+
+    {
+      "title": "Outcome-Verteilung",
+      "description": "Donut nach success/partial/failed (Loki-Stream-Label outcome).",
+      "type": "piechart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"}[$__range]))",
+          "refId": "A", "legendFormat": "{{outcome}}"
+        }
+      ],
+      "options": { "pieType": "donut", "displayLabels": ["percent", "name"] },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "success" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] },
+          { "matcher": { "id": "byName", "options": "partial" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] },
+          { "matcher": { "id": "byName", "options": "failed"  }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] }
+        ]
+      }
+    },
+    {
+      "title": "OS-Verteilung",
+      "description": "Donut über Loki-Stream-Label os (Win32NT / Unix).",
+      "type": "piechart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (os) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", version=~\"$version\", outcome=~\"$outcome\"}[$__range]))",
+          "refId": "A", "legendFormat": "{{os}}"
+        }
+      ],
+      "options": { "pieType": "donut", "displayLabels": ["percent", "name"] },
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Variant-Verteilung",
+      "description": "Donut über Loki-Stream-Label variant (exe / plugin).",
+      "type": "piechart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (variant) (count_over_time({app=\"il2cpp-assembly-fixer\", os=~\"$os\", version=~\"$version\", outcome=~\"$outcome\"}[$__range]))",
+          "refId": "A", "legendFormat": "{{variant}}"
+        }
+      ],
+      "options": { "pieType": "donut", "displayLabels": ["percent", "name"] },
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+
+    { "type": "row", "title": "Environment", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 }, "collapsed": false, "panels": [] },
+
+    {
+      "title": ".NET-Runtime-Versionen",
+      "description": "Aufrufe gruppiert nach dem JSON-Feld runtimeVersion (z.B. .NET 6.0.x, .NET 10.0.x).",
+      "type": "barchart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 25 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (runtimeVersion) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | runtimeVersion != \"\" [$__range]))",
+          "refId": "A", "legendFormat": "{{runtimeVersion}}"
+        }
+      ],
+      "options": { "orientation": "horizontal", "showValue": "always" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "title": "Prozessor-Architekturen",
+      "description": "Verteilung des JSON-Felds processArch (X64, ARM64, …).",
+      "type": "piechart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 25 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (processArch) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | processArch != \"\" [$__range]))",
+          "refId": "A", "legendFormat": "{{processArch}}"
+        }
+      ],
+      "options": { "pieType": "donut", "displayLabels": ["percent", "name"] },
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Locales / Sprachen",
+      "description": "Aufrufe gruppiert nach JSON-Feld cultureName (z.B. de-DE, en-US).",
+      "type": "barchart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 25 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (cultureName) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | cultureName != \"\" [$__range]))",
+          "refId": "A", "legendFormat": "{{cultureName}}"
+        }
+      ],
+      "options": { "orientation": "horizontal", "showValue": "always" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "palette-classic" } } }
+    },
+
+    {
+      "title": "Detaillierte OS-Versionen",
+      "description": "Tabelle mit os + osDescription (Microsoft Windows 10.0.26200, Linux 6.x …).",
+      "type": "table",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (os, osDescription) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", version=~\"$version\"} | json | osDescription != \"\" [$__auto]))",
+          "refId": "A", "legendFormat": "{{os}} – {{osDescription}}", "format": "table", "instant": true
+        }
+      ],
+      "options": { "showHeader": true },
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "CPU-Kern-Verteilung",
+      "description": "Histogramm-Annäherung: Anzahl Aufrufe pro berichtetem cpuCount-Wert.",
+      "type": "barchart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (cpuCount) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | cpuCount != \"\" [$__range]))",
+          "refId": "A", "legendFormat": "{{cpuCount}} cores"
+        }
+      ],
+      "options": { "orientation": "horizontal", "showValue": "always" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "palette-classic" } } }
+    },
+
+    { "type": "row", "title": "Game-Telemetrie (Plugin)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 }, "collapsed": false, "panels": [] },
+
+    {
+      "title": "Game-Verteilung",
+      "description": "Donut über das vom Plugin gemeldete gameName-Feld (z.B. 'Data Center').",
+      "type": "piechart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 42 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (gameName) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=\"plugin\"} | json | gameName != \"\" [$__range]))",
+          "refId": "A", "legendFormat": "{{gameName}}"
+        }
+      ],
+      "options": { "pieType": "donut", "displayLabels": ["percent", "name"] },
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Spielversionen",
+      "description": "Aufrufe nach gameName + gameVersion (zeigt z.B. Data Center 1.0.49.1 vs 1.0.50.3).",
+      "type": "barchart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 42 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (gameName, gameVersion) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=\"plugin\"} | json | gameVersion != \"\" [$__range]))",
+          "refId": "A", "legendFormat": "{{gameName}} {{gameVersion}}"
+        }
+      ],
+      "options": { "orientation": "horizontal", "showValue": "always" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "title": "Unity-Engine-Versionen",
+      "description": "Aufrufe nach unityVersion (UnityEngine-Version, vom Plugin via UnityInformationHandler).",
+      "type": "barchart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 42 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (unityVersion) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=\"plugin\"} | json | unityVersion != \"\" [$__range]))",
+          "refId": "A", "legendFormat": "{{unityVersion}}"
+        }
+      ],
+      "options": { "orientation": "horizontal", "showValue": "always" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "palette-classic" } } }
+    },
+
+    {
+      "title": "MelonLoader-Versionen",
+      "description": "Aufrufe nach melonLoaderVersion (vom Plugin via MelonLoader.BuildInfo.Version).",
+      "type": "barchart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 50 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (melonLoaderVersion) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=\"plugin\"} | json | melonLoaderVersion != \"\" [$__range]))",
+          "refId": "A", "legendFormat": "{{melonLoaderVersion}}"
+        }
+      ],
+      "options": { "orientation": "horizontal", "showValue": "always" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "title": "Aufrufe nach Tool-Version",
+      "description": "Verteilung der Aufrufe pro Fixer-Release-Version (Loki-Stream-Label version).",
+      "type": "barchart",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 50 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (version) (count_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\"}[$__range]))",
+          "refId": "A", "legendFormat": "{{version}}"
+        }
+      ],
+      "options": { "orientation": "horizontal", "showValue": "always" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "palette-classic" } } }
+    },
+
+    { "type": "row", "title": "Performance & Workload", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 58 }, "collapsed": false, "panels": [] },
+
+    {
+      "title": "Dauer p50 / p95 / p99 (ms)",
+      "description": "Quantile der durationMs-Verteilung über die Zeit.",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 59 },
+      "targets": [
+        { "datasource": { "type": "loki", "uid": "${datasource}" }, "expr": "quantile_over_time(0.50, {app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap durationMs [$__auto])", "refId": "A", "legendFormat": "p50" },
+        { "datasource": { "type": "loki", "uid": "${datasource}" }, "expr": "quantile_over_time(0.95, {app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap durationMs [$__auto])", "refId": "B", "legendFormat": "p95" },
+        { "datasource": { "type": "loki", "uid": "${datasource}" }, "expr": "quantile_over_time(0.99, {app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap durationMs [$__auto])", "refId": "C", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } }
+    },
+    {
+      "title": "Ø Dauer pro Variante (ms)",
+      "description": "Durchschnitt von durationMs pro Variant-Label im Zeitverlauf.",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 59 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "avg by (variant) (avg_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap durationMs [$__auto]))",
+          "refId": "A", "legendFormat": "{{variant}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+
+    {
+      "title": "Assemblies: scanned vs modified vs skipped",
+      "description": "Drei Zeitreihen aus den JSON-Feldern assembliesScanned / assembliesModified / assembliesSkipped.",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 67 },
+      "targets": [
+        { "datasource": { "type": "loki", "uid": "${datasource}" }, "expr": "sum_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap assembliesScanned  [$__auto])", "refId": "A", "legendFormat": "scanned" },
+        { "datasource": { "type": "loki", "uid": "${datasource}" }, "expr": "sum_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap assembliesModified [$__auto])", "refId": "B", "legendFormat": "modified" },
+        { "datasource": { "type": "loki", "uid": "${datasource}" }, "expr": "sum_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap assembliesSkipped  [$__auto])", "refId": "C", "legendFormat": "skipped" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } }
+    },
+    {
+      "title": "Entfernte Duplikate über Zeit",
+      "description": "Bar-Timeseries auf typesRemoved. Spitzen markieren neu eingeführte Cpp2IL-Probleme.",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 67 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum_over_time({app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | unwrap typesRemoved [$__auto])",
+          "refId": "A", "legendFormat": "types removed"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "yellow" },
+          "custom": { "drawStyle": "bars", "fillOpacity": 70 }
+        }
+      }
+    },
+
+    { "type": "row", "title": "Hot Spots & Logs", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 75 }, "collapsed": false, "panels": [] },
+
+    {
+      "title": "Top-DLLs mit Duplikaten",
+      "description": "Jeder Eintrag zeigt einen Lauf, in dem mindestens ein Duplikat entfernt wurde, plus die Per-DLL-Liste aus dem assemblies-Array.",
+      "type": "logs",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 76 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "{app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | typesRemoved > 0 | line_format \"[{{.gameName}} {{.gameVersion}} / {{.unityVersion}}] removed={{.typesRemoved}} → {{.assemblies}}\"",
+          "refId": "A"
+        }
+      ],
+      "options": { "showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending" }
+    },
+    {
+      "title": "Letzte Läufe mit Fehlern",
+      "description": "Failed/partial Runs (outcome != success) als formatierte Log-Lines.",
+      "type": "logs",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 76 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "{app=\"il2cpp-assembly-fixer\", outcome=~\"failed|partial\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\"} | json | line_format \"[{{.variant}} {{.version}} {{.os}} / {{.gameName}} {{.gameVersion}}] scanned={{.assembliesScanned}} modified={{.assembliesModified}} removed={{.typesRemoved}} errors={{.errors}} duration={{.durationMs}}ms\"",
+          "refId": "A"
+        }
+      ],
+      "options": { "showTime": true, "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending" }
+    },
+
+    {
+      "title": "Run-Detailtabelle (letzte 50)",
+      "description": "Top 50 jüngsten Telemetrie-Events nach JSON-Parse — alle Felder als Tabellenspalten.",
+      "type": "table",
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 86 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "{app=\"il2cpp-assembly-fixer\", variant=~\"$variant\", os=~\"$os\", version=~\"$version\", outcome=~\"$outcome\"} | json",
+          "refId": "A", "format": "table", "maxLines": 50
+        }
+      ],
+      "options": { "showHeader": true },
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    }
+  ]
+}

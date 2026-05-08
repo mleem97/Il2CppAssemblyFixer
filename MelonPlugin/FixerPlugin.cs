@@ -9,6 +9,7 @@ using MelonLoader.Utils;
 using DN = dnlib.DotNet;
 using DNEmit = dnlib.DotNet.Emit;
 using Cecil = Mono.Cecil;
+using Il2CppAssemblyFixer.Shared;
 
 // MelonLoader plugin metadata – runs BEFORE MelonMods are loaded
 [assembly: MelonInfo(typeof(Il2CppAssemblyFixerPlugin.FixerPlugin), "Il2CppAssemblyFixer", "1.50.3", "mleem97",
@@ -52,28 +53,53 @@ public class FixerPlugin : MelonPlugin
         }
         catch (Exception ex)
         {
-            MelonLogger.Error($"[Il2CppAssemblyFixer] Fatal: {ex.GetType().Name}: {ex.Message}");
+            Err($"[Il2CppAssemblyFixer] Fatal: {ex.GetType().Name}: {ex.Message}");
             MelonLogger.Error("[Il2CppAssemblyFixer] Plugin aborted to keep MelonLoader running.");
         }
     }
 
+    // Tee console + file logging. The plugin uses MelonLogger (which goes to
+    // Latest.log) AND mirrors lines into <MelonLoaderDir>/fixer.log.
+    private static FileLogger? _logFile;
+    private static FixerConfig? _config;
+
+    private static void Msg (string m) { MelonLogger.Msg     (m); _logFile?.WriteLine($"[INFO]  {m}"); }
+    private static void Warn(string m) { MelonLogger.Warning (m); _logFile?.WriteLine($"[WARN]  {m}"); }
+    private static void Err (string m) { MelonLogger.Error   (m); _logFile?.WriteLine($"[ERROR] {m}"); }
+
     private static void RunFixer()
     {
-        MelonLogger.Msg("═══════════════════════════════════════════════════════════");
-        MelonLogger.Msg("  Il2CppAssemblyFixer – scanning Il2CppAssemblies …");
-        MelonLogger.Msg("═══════════════════════════════════════════════════════════");
+        string? mlDir = SafeGetMelonLoaderDir();
+        if (!string.IsNullOrEmpty(mlDir))
+        {
+            _config = FixerConfig.LoadOrCreate(mlDir!, w => Warn($"[Il2CppAssemblyFixer] {w}"));
+            if (_config.Logging.WriteLogFile)
+                _logFile = new FileLogger(mlDir!, _config.Logging.LogFileName, "Il2CppAssemblyFixer (Plugin)");
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        Msg("═══════════════════════════════════════════════════════════");
+        Msg("  Il2CppAssemblyFixer – scanning Il2CppAssemblies …");
+        Msg("═══════════════════════════════════════════════════════════");
+        if (_logFile?.Path != null) Msg($"[Il2CppAssemblyFixer] Log file: {_logFile.Path}");
+        if (_config != null)
+            Msg(_config.Telemetry.Enabled
+                ? $"[Il2CppAssemblyFixer] Telemetry enabled → {_config.Telemetry.Endpoint} ({_config.Telemetry.Format})"
+                : "[Il2CppAssemblyFixer] Telemetry disabled (opt-in via fixer_config.json).");
 
         string? assembliesDir = ResolveAssembliesDirectory();
 
         if (string.IsNullOrEmpty(assembliesDir) || !Directory.Exists(assembliesDir))
         {
-            MelonLogger.Warning($"[Il2CppAssemblyFixer] Il2CppAssemblies directory not found: " +
-                                $"'{assembliesDir ?? "<null>"}'");
-            MelonLogger.Warning("[Il2CppAssemblyFixer] If mods fail to load, run Il2CppAssemblyFixer.exe manually.");
+            Warn($"[Il2CppAssemblyFixer] Il2CppAssemblies directory not found: " +
+                 $"'{assembliesDir ?? "<null>"}'");
+            Warn("[Il2CppAssemblyFixer] If mods fail to load, run Il2CppAssemblyFixer.exe manually.");
+            _logFile?.Dispose();
             return;
         }
 
-        MelonLogger.Msg($"[Il2CppAssemblyFixer] Scanning: {assembliesDir}");
+        Msg($"[Il2CppAssemblyFixer] Scanning: {assembliesDir}");
 
         // Load manifest of previously fixed files (hash per filename).
         Dictionary<string, string> manifest = LoadManifest(assembliesDir);
@@ -81,6 +107,7 @@ public class FixerPlugin : MelonPlugin
 
         string[] dlls = Directory.GetFiles(assembliesDir, "*.dll", SearchOption.TopDirectoryOnly);
         int processed = 0, fixedCount = 0, skipped = 0, errors = 0, removedTypes = 0;
+        var details = new List<Telemetry.AssemblyDetail>();
 
         foreach (string dll in dlls)
         {
@@ -90,7 +117,7 @@ public class FixerPlugin : MelonPlugin
             catch (Exception ex)
             {
                 errors++;
-                MelonLogger.Warning($"[Il2CppAssemblyFixer] Cannot hash '{fileName}': {ex.Message}");
+                Warn($"[Il2CppAssemblyFixer] Cannot hash '{fileName}': {ex.Message}");
                 continue;
             }
 
@@ -109,7 +136,14 @@ public class FixerPlugin : MelonPlugin
                 if (removed > 0)
                 {
                     fixedCount++;
-                    MelonLogger.Msg($"[Il2CppAssemblyFixer] Fixed {removed} duplicate(s) in: {fileName}");
+                    Msg($"[Il2CppAssemblyFixer] Fixed {removed} duplicate(s) in: {fileName}");
+                    details.Add(new Telemetry.AssemblyDetail
+                    {
+                        Name         = fileName,
+                        TypesRemoved = removed,
+                        Rewritten    = true,
+                        Conservative = false,
+                    });
                 }
 
                 // Always update manifest with post-fix hash (so unchanged files skip next time).
@@ -119,7 +153,7 @@ public class FixerPlugin : MelonPlugin
             catch (Exception ex)
             {
                 errors++;
-                MelonLogger.Error($"[Il2CppAssemblyFixer] Error processing '{fileName}': {ex.Message}");
+                Err($"[Il2CppAssemblyFixer] Error processing '{fileName}': {ex.Message}");
             }
         }
 
@@ -128,15 +162,53 @@ public class FixerPlugin : MelonPlugin
             try { SaveManifest(assembliesDir, manifest); }
             catch (Exception ex)
             {
-                MelonLogger.Warning($"[Il2CppAssemblyFixer] Could not write manifest: {ex.Message}");
+                Warn($"[Il2CppAssemblyFixer] Could not write manifest: {ex.Message}");
             }
         }
 
-        MelonLogger.Msg($"[Il2CppAssemblyFixer] Summary – scanned: {dlls.Length}  " +
+        Msg($"[Il2CppAssemblyFixer] Summary – scanned: {dlls.Length}  " +
                         $"processed: {processed}  fixed: {fixedCount}  " +
                         $"skipped (cached): {skipped}  errors: {errors}  " +
                         $"types removed: {removedTypes}");
-        MelonLogger.Msg("═══════════════════════════════════════════════════════════");
+        Msg("═══════════════════════════════════════════════════════════");
+
+        sw.Stop();
+        if (_config != null)
+        {
+            var evt = new Telemetry.Event
+            {
+                Variant            = "plugin",
+                Version            = typeof(FixerPlugin).Assembly.GetName().Version?.ToString() ?? "unknown",
+                AssembliesScanned  = dlls.Length,
+                AssembliesModified = fixedCount,
+                AssembliesSkipped  = skipped,
+                TypesRemoved       = removedTypes,
+                RewritesPerformed  = fixedCount,
+                Errors             = errors,
+                DurationMs         = sw.ElapsedMilliseconds,
+                MachineKey         = _config.Telemetry.AnonymousId,
+                Assemblies         = details,
+            };
+            Telemetry.PopulateEnvironment(evt);
+            Telemetry.PopulateMelonInfo(evt);
+            Telemetry.DeriveOutcome(evt);
+            Telemetry.Send(_config.Telemetry, evt, line => Msg($"[Il2CppAssemblyFixer] {line}"));
+        }
+
+        _logFile?.Dispose();
+    }
+
+    private static string? SafeGetMelonLoaderDir()
+    {
+        try
+        {
+            string mlDir = MelonEnvironment.MelonLoaderDirectory;
+            if (!string.IsNullOrEmpty(mlDir)) return mlDir;
+        }
+        catch { /* older MelonLoader */ }
+
+        string fallback = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MelonLoader");
+        return Directory.Exists(fallback) ? fallback : null;
     }
 
     // ── Manifest (per-file hash cache) ────────────────────────────────────
@@ -241,7 +313,7 @@ public class FixerPlugin : MelonPlugin
             int referencedCopies = duplicates.Count(t => referenceCounts.TryGetValue(t, out int c) && c > 0);
             if (referencedCopies > 1)
             {
-                MelonLogger.Warning($"[Il2CppAssemblyFixer] Duplicate group '{group.Key}' has " +
+                Warn($"[Il2CppAssemblyFixer] Duplicate group '{group.Key}' has " +
                                     $"{referencedCopies} referenced copies; skipping unsafe removal.");
                 continue;
             }
@@ -275,7 +347,7 @@ public class FixerPlugin : MelonPlugin
         catch (Exception cecilEx)
         {
             // dnlib-cleaned data is still usable; log warning and proceed.
-            MelonLogger.Warning($"[Il2CppAssemblyFixer] Cecil normalization skipped for " +
+            Warn($"[Il2CppAssemblyFixer] Cecil normalization skipped for " +
                                 $"'{Path.GetFileName(path)}': {cecilEx.Message}");
         }
 
