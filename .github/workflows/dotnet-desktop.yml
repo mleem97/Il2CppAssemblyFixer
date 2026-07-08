@@ -8,18 +8,16 @@ on:
     branches: [ "master" ]
 
 env:
-  # Base version for auto-tag scheme: <BASE>-U<run_number>
   VERSION_BASE: "1.50.3"
 
 permissions:
   contents: write
 
 jobs:
-  # ── Decide where to run + compute the version once ───────────────────────
   prepare:
     runs-on: ubuntu-latest
     outputs:
-      version:      ${{ steps.version.outputs.version }}
+      version: ${{ steps.version.outputs.version }}
       linux_runner: ${{ steps.pick.outputs.linux }}
     steps:
       - name: Determine version
@@ -33,11 +31,6 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building version: $VERSION"
 
-      # Pick a self-hosted Linux runner if one is online + idle; otherwise fall
-      # back to GitHub-hosted ubuntu-latest. Listing self-hosted runners needs
-      # `administration:read`, which the default GITHUB_TOKEN lacks — supply a
-      # PAT as `SELF_HOSTED_RUNNER_PAT` to enable the check. Without it (or on
-      # API failure) we silently fall back to hosted.
       - name: Pick runner (self-hosted with hosted fallback)
         id: pick
         env:
@@ -66,7 +59,6 @@ jobs:
           echo "linux=$lin" >> "$GITHUB_OUTPUT"
           echo "Linux runner: $lin"
 
-  # ── Three variants in parallel (all built on Linux) ──────────────────────
   build:
     needs: prepare
     strategy:
@@ -77,23 +69,23 @@ jobs:
     runs-on: ${{ fromJSON(needs.prepare.outputs.linux_runner) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
 
       - name: Setup .NET 6
         if: matrix.kind == 'plugin'
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '6.0.x'
 
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ matrix.kind }}-${{ hashFiles('**/*.csproj') }}
@@ -104,24 +96,14 @@ jobs:
       - name: Restore
         run: dotnet restore Il2CppAssemblyFixer.sln
 
-      # ── Embed telemetry credentials into the C# source BEFORE publish ───
-      # Substitutes the __TELEMETRY_*__ placeholders in Shared/TelemetryDefaults.cs
-      # with the matching repo secrets. The compiled assembly then carries the
-      # values as plain string literals — security through obscurity only; the
-      # real abuse mitigation (rate limit + CrowdSec) lives at the ingest side.
-      # If a secret is unset, its placeholder stays unsubstituted and the
-      # runtime's Resolve() helper turns it back into an empty string at use
-      # time, so local builds and unconfigured forks just no-op cleanly.
       - name: Embed telemetry defaults
         env:
           TELEMETRY_ENDPOINT:  ${{ secrets.TELEMETRY_ENDPOINT  }}
           TELEMETRY_USERNAME:  ${{ secrets.TELEMETRY_USERNAME  }}
           TELEMETRY_API_KEY:   ${{ secrets.TELEMETRY_API_KEY   }}
           TELEMETRY_TENANT_ID: ${{ secrets.TELEMETRY_TENANT_ID }}
-        run: |
-          python3 scripts/embed_telemetry_defaults.py Shared/TelemetryDefaults.cs
+        run: python3 scripts/embed_telemetry_defaults.py Shared/TelemetryDefaults.cs
 
-      # ── EXE: Windows x64 (cross-published from Linux) ───────────────────
       - name: Publish EXE win-x64
         if: matrix.kind == 'exe-win'
         run: |
@@ -133,7 +115,6 @@ jobs:
             -p:PublishTrimmed=false \
             -o publish/win-x64
 
-      # ── EXE: Linux x64 ──────────────────────────────────────────────────
       - name: Publish EXE linux-x64
         if: matrix.kind == 'exe-linux'
         run: |
@@ -145,7 +126,6 @@ jobs:
             -p:PublishTrimmed=false \
             -o publish/linux-x64
 
-      # ── MelonLoader Plugin DLL (net6, framework-dependent) ──────────────
       - name: Publish MelonLoader Plugin
         if: matrix.kind == 'plugin'
         run: |
@@ -154,25 +134,18 @@ jobs:
             --self-contained false \
             -o publish/plugin
 
-      # ── Ensure `zip` is available (preinstalled on hosted, may be missing on self-hosted)
       - name: Ensure zip
         run: |
           if ! command -v zip >/dev/null 2>&1; then
             sudo apt-get update && sudo apt-get install -y zip
           fi
 
-      # ── Assemble the bundle (config + readme) ───────────────────────────
-      # The shipped fixer_config.json has all telemetry fields blank; users
-      # who want to override anything (e.g. point at a private Loki) can fill
-      # them locally. The actual production endpoint+creds live as embedded
-      # constants in the assembly (see "Embed telemetry defaults" above).
-      - name: Prepare bundle (config + readme)
+      - name: Prepare bundle
         run: |
           mkdir -p bundle
-          cp README_TELEMETRY.md   bundle/README.md
-          cp fixer_config.json     bundle/fixer_config.json
+          cp README_TELEMETRY.md bundle/README.md
+          cp fixer_config.json bundle/fixer_config.json
 
-      # ── Package ─────────────────────────────────────────────────────────
       - name: Package exe-win
         if: matrix.kind == 'exe-win'
         env:
@@ -204,111 +177,106 @@ jobs:
         run: |
           mkdir -p assets staging
           cp publish/plugin/Il2CppAssemblyFixerPlugin.dll staging/
-          cp publish/plugin/dnlib.dll                     staging/
-          cp publish/plugin/Mono.Cecil.dll                staging/
+          cp publish/plugin/dnlib.dll staging/
+          cp publish/plugin/Mono.Cecil.dll staging/
           cp bundle/fixer_config.json staging/
           cp bundle/README.md staging/
           (cd staging && zip -j "../assets/Il2CppAssemblyFixerPlugin_${VERSION}_MelonLoader.zip" *)
           rm -rf staging
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: assets-${{ matrix.kind }}
           path: assets/*.zip
           if-no-files-found: error
 
-  # ── GitHub Release: every master push + every tag ─────────────────────
   release:
-    needs: [prepare, build]
+    needs: [ prepare, build ]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
-    - name: Download all build artifacts
-      uses: actions/download-artifact@v4
-      with:
-        pattern: assets-*
-        merge-multiple: true
-        path: ./
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: assets-*
+          merge-multiple: true
+          path: ./
 
-    - name: Determine previous tag
-      id: meta
-      run: |
-        VERSION="${{ needs.prepare.outputs.version }}"
+      - name: Determine previous tag
+        id: meta
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          git fetch --tags --force --prune || true
 
-        git fetch --tags --force --prune || true
+          PREV_TAG=$(git tag --list --sort=-creatordate \
+            | grep -v "^${VERSION}$" \
+            | head -n 1)
 
-        PREV_TAG=$(git tag --list --sort=-creatordate \
-                   | grep -v "^${VERSION}\$" \
-                   | head -n 1)
+          if [[ -z "$PREV_TAG" ]]; then
+            PREV_TAG=$(git rev-list --max-parents=0 HEAD | head -n 1)
+          fi
 
-        if [[ -z "$PREV_TAG" ]]; then
-          PREV_TAG=$(git rev-list --max-parents=0 HEAD | head -n 1)
-        fi
+          DATE_UTC=$(date -u '+%Y-%m-%d')
+          TIME_UTC=$(date -u '+%H:%M:%S UTC')
 
-        DATE_UTC=$(date -u '+%Y-%m-%d')
-        TIME_UTC=$(date -u '+%H:%M:%S UTC')
+          {
+            echo "version=$VERSION"
+            echo "prev_tag=$PREV_TAG"
+            echo "date=$DATE_UTC"
+            echo "time=$TIME_UTC"
+          } >> "$GITHUB_OUTPUT"
 
-        {
-          echo "version=$VERSION"
-          echo "prev_tag=$PREV_TAG"
-          echo "date=$DATE_UTC"
-          echo "time=$TIME_UTC"
-        } >> "$GITHUB_OUTPUT"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          PREV_TAG: ${{ steps.meta.outputs.prev_tag }}
+          DATE_UTC: ${{ steps.meta.outputs.date }}
+          TIME_UTC: ${{ steps.meta.outputs.time }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          cat > release-notes.md <<EOF
+          **Full Changelog**: https://github.com/${REPOSITORY}/compare/${PREV_TAG}...${VERSION}
 
-        echo "Version : $VERSION"
-        echo "PrevTag : $PREV_TAG"
+          (maybe) Fixes #6
 
-    - name: Create GitHub Release
-      env:
-        GH_TOKEN: ${{ github.token }}
-        VERSION: ${{ steps.meta.outputs.version }}
-        PREV_TAG: ${{ steps.meta.outputs.prev_tag }}
-        DATE_UTC: ${{ steps.meta.outputs.date }}
-        TIME_UTC: ${{ steps.meta.outputs.time }}
-        REPOSITORY: ${{ github.repository }}
-        COMMIT_SHA: ${{ github.sha }}
-      run: |
-        cat > release-notes.md <<EOF
-        **Full Changelog**: https://github.com/${REPOSITORY}/compare/${PREV_TAG}...${VERSION}
+          ## Release Notes: Il2CppAssemblyFixer
 
-        (maybe) Fixes #6
+          ### **Summary of Functions**
+          The **Il2CppAssemblyFixer** is designed to resolve issues where MelonLoader fails to correctly generate or load assemblies for Il2Cpp-based games. Its core functions include:
 
-        ## Release Notes: Il2CppAssemblyFixer
+          *   **Dependency Resolution:** Manually bridges the gap when the automatic `Il2CppAssemblyGenerator` fails to fetch the correct Unity dependencies.
+          *   **Assembly Repair:** Fixes common "missing method" or "class not found" errors by ensuring the environment is correctly mapped to the game's specific Unity engine version.
+          *   **Automated Injection:** Provides a streamlined way to apply fixes without requiring deep manual edits of internal MelonLoader files.
 
-        ### **Summary of Functions**
-        The **Il2CppAssemblyFixer** is designed to resolve issues where MelonLoader fails to correctly generate or load assemblies for Il2Cpp-based games. Its core functions include:
+          ---
 
-        *   **Dependency Resolution:** Manually bridges the gap when the automatic `Il2CppAssemblyGenerator` fails to fetch the correct Unity dependencies.
-        *   **Assembly Repair:** Fixes common "missing method" or "class not found" errors by ensuring the environment is correctly mapped to the game's specific Unity engine version.
-        *   **Automated Injection:** Provides a streamlined way to apply fixes without requiring deep manual edits of internal MelonLoader files.
+          ### **Current Status & Future Plans**
+          *   **Compatibility:** The current `.exe` remains fully functional. No mandatory update is required at this time unless otherwise specified.
+          *   **Roadmap:** I am currently researching ways to implement this logic **automatically** within the MelonLoader workflow to eliminate the need for manual execution in the future.
 
-        ---
+          ### **Last Tested**
+          *   **Date:** PENDING
+          *   **Time:** PENDING
+          *   **Status:** PENDING
 
-        ### **Current Status & Future Plans**
-        *   **Compatibility:** The current `.exe` remains fully functional. No mandatory update is required at this time unless otherwise specified.
-        *   **Roadmap:** I am currently researching ways to implement this logic **automatically** within the MelonLoader workflow to eliminate the need for manual execution in the future.
+          ---
 
-        ### **Last Tested**
-        *   **Date:** PENDING
-        *   **Time:** PENDING
-        *   **Status:** PENDING
+          > **Note:** If you encounter any issues with the current build, please refer to the [GitHub Issue Tracker](https://github.com/${REPOSITORY}/issues).
 
-        ---
+          ---
+          <sub>Auto-built from commit ${COMMIT_SHA} on ${DATE_UTC} ${TIME_UTC}</sub>
+          EOF
 
-        > **Note:** If you encounter any issues with the current build, please refer to the [GitHub Issue Tracker](https://github.com/${REPOSITORY}/issues).
-
-        ---
-        <sub>Auto-built from commit ${COMMIT_SHA} on ${DATE_UTC} ${TIME_UTC}</sub>
-        EOF
-
-        gh release create "$VERSION" ./*.zip \
-          --title "$VERSION" \
-          --target "$COMMIT_SHA" \
-          --notes-file release-notes.md \
-          --latest
+          gh release create "$VERSION" ./*.zip \
+            --title "$VERSION" \
+            --target "$COMMIT_SHA" \
+            --notes-file release-notes.md \
+            --latest
