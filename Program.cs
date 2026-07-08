@@ -8,7 +8,7 @@ using Il2CppAssemblyFixer.Shared;
 
 namespace Il2CppAssemblyFixer;
 
-partial class Program
+static partial class Program
 {
     const string GameFolder = "Data Center";
     const string ConfigFileName = "game-path.txt";
@@ -56,7 +56,7 @@ partial class Program
     static int Main(string[] args)
     {
         PrintBanner(args);
-        RunMelonLoaderRegen();
+        LogMelonLoaderRegenHint();
 
         bool forceRewrite = HasFlag(args, "--rewrite");
         string? targetDir = ResolveTargetDirectory(args, forceRewrite);
@@ -150,26 +150,20 @@ partial class Program
         }
     }
 
-    static void RunMelonLoaderRegen()
+    static void LogMelonLoaderRegenHint()
     {
-        Info("Step 1 – Checking for MelonLoader.Installer.exe …");
-
+        Info("Step 1 – MelonLoader AGF regeneration check …");
         string installer = GetInstallerPath();
         Debug($"Installer path: {installer}");
+
         if (!File.Exists(installer))
         {
-            Warn("MelonLoader.Installer.exe not found – skipping AGF regeneration.");
+            Warn("MelonLoader.Installer.exe not found – skipping AGF regeneration hint.");
             return;
         }
 
-        Info("MelonLoader.Installer.exe found. Launching with --melonloader.agfregenerate …");
-        try { RunInstallerProcess(installer); }
-        catch (Exception ex)
-        {
-            _errors++;
-            Error($"Failed to run MelonLoader.Installer.exe: {ex.Message}");
-            Error($"Stack trace:\n{ex.StackTrace}");
-        }
+        Info("MelonLoader.Installer.exe found. Automatic execution is disabled to avoid OS command execution.");
+        Info($"Run manually if regeneration is required: \"{installer}\" --melonloader.agfregenerate");
     }
 
     static string GetInstallerPath()
@@ -179,37 +173,6 @@ partial class Program
         if (!installer.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Installer path resolved outside application directory.");
         return installer;
-    }
-
-    static void RunInstallerProcess(string installer)
-    {
-        if (!string.Equals(Path.GetFileName(installer), InstallerFileName, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Unexpected installer executable name.");
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = installer,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        psi.ArgumentList.Add("--melonloader.agfregenerate");
-
-        // Security: fixed executable name from the application directory;
-        // fixed literal argument passed via ArgumentList, not a shell string.
-        using var proc = new Process { StartInfo = psi };
-        if (!proc.Start())
-            throw new InvalidOperationException("Installer process did not start.");
-
-        string stdout = proc.StandardOutput.ReadToEnd();
-        string stderr = proc.StandardError.ReadToEnd();
-        proc.WaitForExit();
-
-        Debug($"Installer stdout:\n{(string.IsNullOrWhiteSpace(stdout) ? "<empty>" : stdout.TrimEnd())}");
-        if (!string.IsNullOrWhiteSpace(stderr)) Warn($"Installer stderr:\n{stderr.TrimEnd()}");
-
-        if (proc.ExitCode == 0) Success("MelonLoader regeneration completed (exit code 0).");
-        else Warn($"MelonLoader installer exited with code {proc.ExitCode}.");
     }
 
     static void PrintSummary()
