@@ -18,15 +18,16 @@ internal sealed class FileLogger : IDisposable
         try
         {
             Directory.CreateDirectory(melonLoaderDir);
-            Path = System.IO.Path.Combine(melonLoaderDir, fileName);
+            Path = System.IO.Path.Combine(melonLoaderDir, System.IO.Path.GetFileName(fileName));
 
             var fs = new FileStream(Path, FileMode.Append, FileAccess.Write, FileShare.Read);
             _writer = new StreamWriter(fs) { AutoFlush = true };
             _writer.WriteLine();
             _writer.WriteLine($"════════ {runBanner} @ {DateTime.Now:yyyy-MM-dd HH:mm:ss} ════════");
         }
-        catch
+        catch (Exception)
         {
+            // Logging is best-effort and must not prevent the fixer from running.
             _writer = null;
         }
     }
@@ -34,12 +35,27 @@ internal sealed class FileLogger : IDisposable
     public void WriteLine(string line)
     {
         if (_writer == null) return;
-        try { _writer.WriteLine($"{DateTime.Now:HH:mm:ss}  {line}"); }
-        catch { /* ignore */ }
+        try
+        {
+            _writer.WriteLine($"{DateTime.Now:HH:mm:ss}  {line}");
+        }
+        catch (Exception)
+        {
+            // Logging is best-effort; failed writes are intentionally ignored.
+        }
     }
 
     public void Dispose()
     {
-        try { _writer?.Flush(); _writer?.Dispose(); } catch { }
+        try
+        {
+            _writer?.Flush();
+            _writer?.Dispose();
+        }
+        catch (Exception)
+        {
+            // Cleanup errors are not actionable for callers and must not mask
+            // the fixer result.
+        }
     }
 }
