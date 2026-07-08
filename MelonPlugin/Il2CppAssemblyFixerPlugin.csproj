@@ -20,7 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="dnlib" Version="4.4.0" />
+    <PackageReference Include="dnlib" Version="4.5.0" />
     <PackageReference Include="Mono.Cecil" Version="0.11.6" />
     <!--
       LavaGang.MelonLoader provides MelonLoader's public API for compilation only.
