@@ -24,6 +24,10 @@ It ships as both:
 - a standalone Windows/Linux fixer for manual repair after game updates, and
 - a MelonLoader plugin that runs automatically before mods are loaded.
 
+## Upstream migration
+
+This repository has been aligned with `leoms1408/Il2CppAssemblyFixer:master` where doing so was compatible with the current gregFramework codebase. The original upstream is a compact dnlib-only .NET 6 fixer. This repository keeps the newer standalone app, MelonLoader plugin, Shared helpers, telemetry controls, CI workflow, and gregFramework documentation while carrying forward the relevant upstream dependency baseline (`dnlib` 4.5.0) and duplicate-type repair intent.
+
 ## Compatibility
 
 | Game | Developer | Loader | Status |
@@ -204,7 +208,8 @@ dotnet build -c Release
 
 | Role | Contributor |
 |------|-------------|
-| Codebase | [mleem97](https://github.com/mleem97) / TeamGreg Modding |
+| Original compact fixer | [leoms1408](https://github.com/leoms1408) |
+| gregFramework codebase and integration | [mleem97](https://github.com/mleem97) / TeamGreg Modding |
 | Framework ecosystem | [gregCore](https://github.com/mleem97/gregCore) / gregFramework |
 
 ## License
