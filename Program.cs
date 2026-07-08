@@ -2,15 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.CompilerServices;
 using System.Linq;
 using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
-
-// Explicit aliases to avoid ambiguity between dnlib and Mono.Cecil
 using DN = dnlib.DotNet;
-using DNEmit = dnlib.DotNet.Emit;
 using Cecil = Mono.Cecil;
 using Il2CppAssemblyFixer.Shared;
 
@@ -19,244 +15,65 @@ namespace Il2CppAssemblyFixer;
 class Program
 {
     const string GameFolder = "Data Center";
-
-    // If this file sits next to the EXE it overrides auto-detection entirely.
     const string ConfigFileName = "game-path.txt";
+    const string InstallerFileName = "MelonLoader.Installer.exe";
 
-    // Top-level folder names under which Steam libraries are commonly found on any drive.
     static readonly string[] SteamRootCandidates =
     {
-        "Steam",
-        "SteamLibrary",
-        "Steam Library",
-        "SteamGames",
-        "Games",
-        @"Games\Steam",
-        @"Games\SteamLibrary",
-        @"Program Files\Steam",
-        @"Program Files (x86)\Steam",
-        @"Program Files\SteamLibrary",
+        "Steam", "SteamLibrary", "Steam Library", "SteamGames", "Games",
+        @"Games\Steam", @"Games\SteamLibrary", @"Program Files\Steam",
+        @"Program Files (x86)\Steam", @"Program Files\SteamLibrary",
         @"Program Files (x86)\SteamLibrary",
     };
 
-    // Parent folder names for non-Steam / custom installs (no steamapps\common prefix).
-    // Checked on every drive letter AND inside the user-profile special dirs below.
     static readonly string[] NonSteamParentCandidates =
     {
-        "",                           // game folder directly at drive root: D:\Data Center
-        "Games",
-        "MyGames",
-        "My Games",
-        "PC Games",
-        "PCGames",
-        "GameFiles",
-        "Spiele",
-        "Spielebibliothek",
-        @"Program Files",
-        @"Program Files (x86)",
-        "Apps",
-        "Applications",
-        "Software",
+        "", "Games", "MyGames", "My Games", "PC Games", "PCGames",
+        "GameFiles", "Spiele", "Spielebibliothek", @"Program Files",
+        @"Program Files (x86)", "Apps", "Applications", "Software",
     };
 
-    // User-profile base directories to search for non-Steam installs (populated at runtime).
-    static IEnumerable<string> UserProfileSearchRoots()
-    {
-        string? profile = Environment.GetEnvironmentVariable("USERPROFILE")
-                       ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (!string.IsNullOrEmpty(profile))
-        {
-            yield return profile;
-            yield return Path.Combine(profile, "Desktop");
-            yield return Path.Combine(profile, "Downloads");
-            yield return Path.Combine(profile, "Documents");
-            yield return Path.Combine(profile, "Documents", "Games");
-            yield return Path.Combine(profile, "Documents", "My Games");
-        }
-
-        string? localApp = Environment.GetEnvironmentVariable("LOCALAPPDATA")
-                        ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (!string.IsNullOrEmpty(localApp))
-            yield return localApp;
-    }
-
-    // Linux Steam roots (tried before the generic drive scan on non-Windows).
-    static IEnumerable<string> LinuxSteamRoots()
-    {
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        yield return Path.Combine(home, ".steam", "steam");
-        yield return Path.Combine(home, ".local", "share", "Steam");
-        yield return Path.Combine(home, "snap", "steam", "common", ".steam", "root");
-        yield return "/usr/share/steam";
-        yield return "/opt/steam";
-    }
-
-    // ── Counters for final summary ─────────────────────────────────────────
-    static int _assembliesProcessed = 0;
-    static int _assembliesModified  = 0;
-    static int _typesRemoved        = 0;
-    static int _rewritesPerformed   = 0;
-    static int _errors              = 0;
-    static readonly List<Telemetry.AssemblyDetail> _assemblyDetails = new();
-
-    // ── Assembly filter ────────────────────────────────────────────────────
-    // Never processed — re-encoding these breaks runtime bootstrap.
     static readonly HashSet<string> NeverTouchAssemblies = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Il2CppInterop.Runtime.dll",
-        "Il2Cppmscorlib.dll",
-        "netstandard.dll",
-        "mscorlib.dll",
-        "UnityExplorer.ML.IL2CPP.CoreCLR.dll",
+        "Il2CppInterop.Runtime.dll", "Il2Cppmscorlib.dll", "netstandard.dll",
+        "mscorlib.dll", "UnityExplorer.ML.IL2CPP.CoreCLR.dll",
         "UniverseLib.ML.IL2CPP.Interop.dll",
     };
 
-    // Processed only in conservative mode: compiler-generated duplicates (`<>…`) are
-    // removed (e.g. `<>O` / `<>c` cache classes that Cpp2IL sometimes emits twice on
-    // certain game versions, causing BadImageFormatException at load time), but no
-    // Cecil rewrite happens unless dnlib actually changed something.
     static readonly HashSet<string> ConservativeAssemblies = new(StringComparer.OrdinalIgnoreCase)
     {
-        "UnityEngine.CoreModule.dll",
-        "UnityEngine.UIElementsModule.dll",
-        "UnityEngine.IMGUIModule.dll",
-        "UnityEngine.TextCoreModule.dll",
-        "UnityEngine.InputSystem.dll",
-        "UnityEngine.AssetBundleModule.dll",
+        "UnityEngine.CoreModule.dll", "UnityEngine.UIElementsModule.dll",
+        "UnityEngine.IMGUIModule.dll", "UnityEngine.TextCoreModule.dll",
+        "UnityEngine.InputSystem.dll", "UnityEngine.AssetBundleModule.dll",
         "UnityEngine.SceneManagement.dll",
     };
 
-    sealed class ReferenceComparer<T> : IEqualityComparer<T> where T : class
-    {
-        public bool Equals(T? x, T? y) => ReferenceEquals(x, y);
-        public int GetHashCode(T obj) => RuntimeHelpers.GetHashCode(obj);
-    }
-
-    static bool ShouldProcessAssembly(string path)
-    {
-        return !NeverTouchAssemblies.Contains(Path.GetFileName(path));
-    }
-
-    static bool IsConservative(string path)
-    {
-        return ConservativeAssemblies.Contains(Path.GetFileName(path));
-    }
-
-    // Compiler-generated nested types: `<>O`, `<>c`, `<>c__DisplayClass…`, etc.
-    static bool IsCompilerGenerated(DN.TypeDef type)
-    {
-        string name = type.Name;
-        return name.Length >= 2 && name[0] == '<';
-    }
-
-    // ── Structured log helpers ─────────────────────────────────────────────
+    static int _assembliesProcessed;
+    static int _assembliesModified;
+    static int _typesRemoved;
+    static int _rewritesPerformed;
+    static int _errors;
+    static readonly List<Telemetry.AssemblyDetail> _assemblyDetails = new();
     static FileLogger? _logFile;
     static FixerConfig? _config;
 
-    static void WriteLog(string line, bool toStderr)
-    {
-        if (toStderr) Console.Error.WriteLine(line);
-        else          Console.WriteLine(line);
-        _logFile?.WriteLine(line);
-    }
-
-    static void Info   (string msg) => WriteLog($"[INFO]    {msg}", false);
-    static void Debug  (string msg) => WriteLog($"[DEBUG]   {msg}", false);
-    static void Warn   (string msg) => WriteLog($"[WARN]    {msg}", false);
-    static void Success(string msg) => WriteLog($"[SUCCESS] {msg}", false);
-    static void Error  (string msg) => WriteLog($"[ERROR]   {msg}", true);
-
-    // ── Entry point ────────────────────────────────────────────────────────
     static int Main(string[] args)
     {
-        Console.WriteLine("╔══════════════════════════════════════════════════════════╗");
-        Console.WriteLine("║        Il2Cpp Assembly Fixer  –  .NET 10  (dnlib + Cecil)║");
-        Console.WriteLine("╚══════════════════════════════════════════════════════════╝");
-        Info("Startup complete.");
-        Debug($"Arguments received: [{string.Join(", ", args)}]");
-
-        // ── Step 1: MelonLoader AGF Regeneration ──────────────────────────
+        PrintBanner(args);
         RunMelonLoaderRegen();
 
-        // ── Resolve target directory ──────────────────────────────────────
-        bool   forceRewrite = args.Any(a => a.Equals("--rewrite", StringComparison.OrdinalIgnoreCase));
-        string? targetDir   = args.Where(a => !a.StartsWith("--")).FirstOrDefault()
-                              ?? AutoDetectPath();
+        bool forceRewrite = HasFlag(args, "--rewrite");
+        string? targetDir = ResolveTargetDirectory(args, forceRewrite);
+        if (!ValidateTargetDirectory(targetDir)) return 1;
 
-        if (forceRewrite) Info("Flag --rewrite detected: all assemblies will be rewritten via Mono.Cecil.");
+        InitializeConfigAndLogging(targetDir!);
+        var sw = Stopwatch.StartNew();
 
-        if (string.IsNullOrEmpty(targetDir) || !Directory.Exists(targetDir))
-        {
-            Error("Target directory not found or not specified.");
-            Error($"Resolved path: '{targetDir ?? "<null>"}'");
-            PrintSummary();
-            return 1;
-        }
+        if (MaybeRestoreBackups(args, targetDir!)) return 0;
 
-        Info($"Target directory resolved: {targetDir}");
-
-        // ── Config + log file (both live in <GameRoot>/MelonLoader, next to Latest.log)
-        string melonLoaderDir = Path.GetFullPath(Path.Combine(targetDir, ".."));
-        _config  = FixerConfig.LoadOrCreate(melonLoaderDir, msg => Warn(msg),
-                                            AppContext.BaseDirectory);
-        if (_config.Logging.WriteLogFile)
-        {
-            _logFile = new FileLogger(melonLoaderDir, _config.Logging.LogFileName, "Il2CppAssemblyFixer (EXE)");
-            if (_logFile.Path != null) Info($"Log file: {_logFile.Path}");
-        }
-        Info(_config.Telemetry.Enabled
-            ? $"Telemetry enabled → {_config.Telemetry.Endpoint} ({_config.Telemetry.Format})"
-            : "Telemetry disabled (opt-in via fixer_config.json).");
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-
-        bool restoreBackups = args.Any(a => a.Equals("--restore", StringComparison.OrdinalIgnoreCase));
-        if (restoreBackups)
-        {
-            RestoreAllBackups(targetDir);
-            _logFile?.Dispose();
-            return 0;
-        }
-
-        // ── Step 3: Assembly discovery ────────────────────────────────────
-        string[] dllFiles = DiscoverAssemblies(targetDir);
-        if (dllFiles.Length == 0)
-        {
-            Warn("No .dll files found in the target directory. Nothing to do.");
-            PrintSummary();
-            return 0;
-        }
-
-        // ── Process each assembly ─────────────────────────────────────────
-        foreach (string dllPath in dllFiles)
-        {
-            _assembliesProcessed++;
-            try
-            {
-                bool conservative = IsConservative(dllPath);
-                ProcessAssembly(dllPath, forceRewrite && !conservative, conservative);
-            }
-            catch (Exception ex)
-            {
-                _errors++;
-                Error($"Unhandled exception while processing '{Path.GetFileName(dllPath)}':");
-                Error($"  {ex.GetType().FullName}: {ex.Message}");
-                Error($"  Stack trace:\n{ex.StackTrace}");
-            }
-        }
-
+        ProcessDiscoveredAssemblies(targetDir!, forceRewrite);
         PrintSummary();
-
-        bool deployShim = args.Any(a => a.Equals("--deploy-shim", StringComparison.OrdinalIgnoreCase));
-        if (deployShim)
-        {
-            try   { DeployRuntimeShim(targetDir); }
-            catch (Exception ex)
-            {
-                _errors++;
-                Error($"Failed to deploy runtime shim: {ex.Message}");
-            }
-        }
+        MaybeDeployRuntimeShim(args, targetDir!);
 
         sw.Stop();
         SendTelemetry(sw.ElapsedMilliseconds);
@@ -264,36 +81,115 @@ class Program
         return _errors > 0 ? 2 : 0;
     }
 
-    static void SendTelemetry(long durationMs)
+    static bool HasFlag(string[] args, string flag)
     {
-        if (_config == null) return;
-        var evt = new Telemetry.Event
-        {
-            Variant            = "exe",
-            Version            = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown",
-            AssembliesScanned  = _assembliesProcessed,
-            AssembliesModified = _assembliesModified,
-            AssembliesSkipped  = Math.Max(0, _assembliesProcessed - _assembliesModified - _errors),
-            TypesRemoved       = _typesRemoved,
-            RewritesPerformed  = _rewritesPerformed,
-            Errors             = _errors,
-            DurationMs         = durationMs,
-            MachineKey         = _config.Telemetry.AnonymousId,
-            Assemblies         = _assemblyDetails,
-        };
-        Telemetry.PopulateEnvironment(evt);
-        Telemetry.DeriveOutcome(evt);
-        Telemetry.Send(_config.Telemetry, evt, line => Info(line));
+        return args.Any(a => a.Equals(flag, StringComparison.OrdinalIgnoreCase));
     }
 
-    // ── Step 1: Trigger MelonLoader AGF regeneration ───────────────────────
+    static void PrintBanner(string[] args)
+    {
+        Console.WriteLine("╔══════════════════════════════════════════════════════════╗");
+        Console.WriteLine("║        Il2Cpp Assembly Fixer  –  .NET 10  (dnlib + Cecil)║");
+        Console.WriteLine("╚══════════════════════════════════════════════════════════╝");
+        Info("Startup complete.");
+        Debug($"Arguments received: [{string.Join(", ", args)}]");
+    }
+
+    static string? ResolveTargetDirectory(string[] args, bool forceRewrite)
+    {
+        if (forceRewrite)
+            Info("Flag --rewrite detected: all assemblies will be rewritten via Mono.Cecil.");
+
+        return args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal))
+            ?? AutoDetectPath();
+    }
+
+    static bool ValidateTargetDirectory(string? targetDir)
+    {
+        if (!string.IsNullOrEmpty(targetDir) && Directory.Exists(targetDir))
+        {
+            Info($"Target directory resolved: {targetDir}");
+            return true;
+        }
+
+        Error("Target directory not found or not specified.");
+        Error($"Resolved path: '{targetDir ?? "<null>"}'");
+        PrintSummary();
+        return false;
+    }
+
+    static void InitializeConfigAndLogging(string targetDir)
+    {
+        string melonLoaderDir = Path.GetFullPath(Path.Combine(targetDir, ".."));
+        _config = FixerConfig.LoadOrCreate(melonLoaderDir, msg => Warn(msg), AppContext.BaseDirectory);
+
+        if (_config.Logging.WriteLogFile)
+        {
+            _logFile = new FileLogger(melonLoaderDir, _config.Logging.LogFileName, "Il2CppAssemblyFixer (EXE)");
+            if (_logFile.Path != null) Info($"Log file: {_logFile.Path}");
+        }
+
+        Info(_config.Telemetry.Enabled
+            ? $"Telemetry enabled → {_config.Telemetry.Endpoint} ({_config.Telemetry.Format})"
+            : "Telemetry disabled (opt-in via fixer_config.json).");
+    }
+
+    static bool MaybeRestoreBackups(string[] args, string targetDir)
+    {
+        if (!HasFlag(args, "--restore")) return false;
+        RestoreAllBackups(targetDir);
+        _logFile?.Dispose();
+        return true;
+    }
+
+    static void MaybeDeployRuntimeShim(string[] args, string targetDir)
+    {
+        if (!HasFlag(args, "--deploy-shim")) return;
+
+        try { DeployRuntimeShim(targetDir); }
+        catch (Exception ex)
+        {
+            _errors++;
+            Error($"Failed to deploy runtime shim: {ex.Message}");
+        }
+    }
+
+    static void ProcessDiscoveredAssemblies(string targetDir, bool forceRewrite)
+    {
+        string[] dllFiles = DiscoverAssemblies(targetDir);
+        if (dllFiles.Length == 0)
+        {
+            Warn("No .dll files found in the target directory. Nothing to do.");
+            return;
+        }
+
+        foreach (string dllPath in dllFiles)
+            ProcessAssemblySafely(dllPath, forceRewrite);
+    }
+
+    static void ProcessAssemblySafely(string dllPath, bool forceRewrite)
+    {
+        _assembliesProcessed++;
+        try
+        {
+            bool conservative = IsConservative(dllPath);
+            ProcessAssembly(dllPath, forceRewrite && !conservative, conservative);
+        }
+        catch (Exception ex)
+        {
+            _errors++;
+            Error($"Unhandled exception while processing '{Path.GetFileName(dllPath)}':");
+            Error($"  {ex.GetType().FullName}: {ex.Message}");
+            Error($"  Stack trace:\n{ex.StackTrace}");
+        }
+    }
+
     static void RunMelonLoaderRegen()
     {
         Info("Step 1 – Checking for MelonLoader.Installer.exe …");
 
-        string installer = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MelonLoader.Installer.exe");
+        string installer = GetInstallerPath();
         Debug($"Installer path: {installer}");
-
         if (!File.Exists(installer))
         {
             Warn("MelonLoader.Installer.exe not found – skipping AGF regeneration.");
@@ -301,31 +197,7 @@ class Program
         }
 
         Info("MelonLoader.Installer.exe found. Launching with --melonloader.agfregenerate …");
-        try
-        {
-            var psi = new ProcessStartInfo(installer, "--melonloader.agfregenerate")
-            {
-                UseShellExecute        = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError  = true,
-            };
-
-            using var proc = Process.Start(psi)
-                ?? throw new InvalidOperationException("Process.Start returned null.");
-
-            string stdout = proc.StandardOutput.ReadToEnd();
-            string stderr = proc.StandardError .ReadToEnd();
-            proc.WaitForExit();
-
-            Debug($"Installer stdout:\n{(string.IsNullOrWhiteSpace(stdout) ? "<empty>" : stdout.TrimEnd())}");
-            if (!string.IsNullOrWhiteSpace(stderr))
-                Warn($"Installer stderr:\n{stderr.TrimEnd()}");
-
-            if (proc.ExitCode == 0)
-                Success($"MelonLoader regeneration completed (exit code 0).");
-            else
-                Warn($"MelonLoader installer exited with code {proc.ExitCode}.");
-        }
+        try { RunInstallerProcess(installer); }
         catch (Exception ex)
         {
             _errors++;
@@ -334,7 +206,44 @@ class Program
         }
     }
 
-    // ── Step 2: Auto-detect game path ─────────────────────────────────────
+    static string GetInstallerPath()
+    {
+        string baseDir = Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory);
+        string installer = Path.GetFullPath(Path.Combine(baseDir, Path.GetFileName(InstallerFileName)));
+        if (!installer.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Installer path resolved outside application directory.");
+        return installer;
+    }
+
+    static void RunInstallerProcess(string installer)
+    {
+        if (!string.Equals(Path.GetFileName(installer), InstallerFileName, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Unexpected installer executable name.");
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = installer,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.ArgumentList.Add("--melonloader.agfregenerate");
+
+        // Security: the executable path is built from the application base directory
+        // and a fixed file name; arguments are fixed literals passed via ArgumentList.
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException("Process.Start returned null.");
+
+        string stdout = proc.StandardOutput.ReadToEnd();
+        string stderr = proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+
+        Debug($"Installer stdout:\n{(string.IsNullOrWhiteSpace(stdout) ? "<empty>" : stdout.TrimEnd())}");
+        if (!string.IsNullOrWhiteSpace(stderr)) Warn($"Installer stderr:\n{stderr.TrimEnd()}");
+
+        if (proc.ExitCode == 0) Success("MelonLoader regeneration completed (exit code 0).");
+        else Warn($"MelonLoader installer exited with code {proc.ExitCode}.");
+    }
 
     [SupportedOSPlatform("windows")]
     static string? ReadSteamInstallPath()
@@ -348,7 +257,7 @@ class Program
 
         foreach (string key in keys)
         {
-            Debug($"Querying registry: {key}\\InstallPath");
+            Debug($"Querying registry key: {key}; value: InstallPath");
             string? value = Registry.GetValue(key, "InstallPath", null) as string;
             if (!string.IsNullOrEmpty(value))
             {
@@ -359,7 +268,6 @@ class Program
         return null;
     }
 
-    // Parses Steam's libraryfolders.vdf and yields every configured library path.
     static IEnumerable<string> ParseLibraryFoldersVdf(string steamRoot)
     {
         string vdf = Path.Combine(steamRoot, "steamapps", "libraryfolders.vdf");
@@ -374,25 +282,19 @@ class Program
         foreach (string line in File.ReadLines(vdf))
         {
             Match m = rx.Match(line);
-            if (m.Success)
-            {
-                // VDF uses double-backslash; unescape to a real path
-                string lib = m.Groups[1].Value.Replace(@"\\", @"\");
-                Debug($"  VDF library: {lib}");
-                yield return lib;
-            }
+            if (!m.Success) continue;
+            string lib = m.Groups[1].Value.Replace(@"\\", @"\");
+            Debug($"  VDF library: {lib}");
+            yield return lib;
         }
     }
 
-    // Checks <steamLibrary>\steamapps\common\<game>\MelonLoader\Il2CppAssemblies
     static string? TryLibrary(string libraryRoot)
     {
-        string candidate = Path.Combine(libraryRoot, "steamapps", "common",
-                                        GameFolder, "MelonLoader", "Il2CppAssemblies");
+        string candidate = Path.Combine(libraryRoot, "steamapps", "common", GameFolder, "MelonLoader", "Il2CppAssemblies");
         return Directory.Exists(candidate) ? candidate : null;
     }
 
-    // Checks <parentDir>\<game>\MelonLoader\Il2CppAssemblies  (non-Steam layout)
     static string? TryGameFolder(string parentDir)
     {
         if (string.IsNullOrEmpty(parentDir)) return null;
@@ -403,66 +305,84 @@ class Program
     static string? AutoDetectPath()
     {
         Info("Step 2 – Auto-detecting game installation path …");
+        string? found = ReadConfigOverridePath()
+            ?? TryWindowsSteamDetection()
+            ?? TryUnixSteamDetection()
+            ?? ScanDrivesForSteamLayout()
+            ?? ScanDrivesForCustomLayout()
+            ?? ScanUserProfileDirectories();
 
-        // ── Step 0: config-file override (game-path.txt next to the EXE) ──────
+        if (found != null) return found;
+        Warn("Game installation not found automatically.");
+        Warn($"Tip: create '{ConfigFileName}' next to this EXE and put the game path inside.");
+        return null;
+    }
+
+    static string? ReadConfigOverridePath()
+    {
         string cfgPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
-        if (File.Exists(cfgPath))
+        if (!File.Exists(cfgPath)) return null;
+
+        string custom = File.ReadAllText(cfgPath).Trim().Trim('"');
+        Info($"Config override found ({ConfigFileName}): {custom}");
+        if (Directory.Exists(custom))
         {
-            string custom = File.ReadAllText(cfgPath).Trim().Trim('"');
-            Info($"Config override found ({ConfigFileName}): {custom}");
-            if (Directory.Exists(custom))
-            {
-                // Accept both the Il2CppAssemblies dir and the game root
-                if (custom.EndsWith("Il2CppAssemblies", StringComparison.OrdinalIgnoreCase))
-                    return custom;
-                string sub = Path.Combine(custom, "MelonLoader", "Il2CppAssemblies");
-                if (Directory.Exists(sub)) return sub;
-            }
-            Warn($"Path in {ConfigFileName} does not exist or is invalid: {custom}");
+            if (custom.EndsWith("Il2CppAssemblies", StringComparison.OrdinalIgnoreCase)) return custom;
+            string sub = Path.Combine(custom, "MelonLoader", "Il2CppAssemblies");
+            if (Directory.Exists(sub)) return sub;
         }
 
-        // ── Step 1 (Windows): Registry + libraryfolders.vdf ──────────────────
-        if (OperatingSystem.IsWindows())
+        Warn($"Path in {ConfigFileName} does not exist or is invalid: {custom}");
+        return null;
+    }
+
+    static string? TryWindowsSteamDetection()
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+
+        try
         {
-            try
+            string? steamRoot = ReadSteamInstallPath();
+            if (steamRoot == null)
             {
-                string? steamRoot = ReadSteamInstallPath();
-                if (steamRoot != null)
-                {
-                    string? found = TryLibrary(steamRoot);
-                    if (found != null) { Success($"Found (registry): {found}"); return found; }
-
-                    foreach (string lib in ParseLibraryFoldersVdf(steamRoot))
-                    {
-                        found = TryLibrary(lib);
-                        if (found != null) { Success($"Found (VDF library): {found}"); return found; }
-                    }
-                    Warn("Not found in any Steam library from libraryfolders.vdf.");
-                }
-                else
-                {
-                    Warn("Steam registry key not found.");
-                }
+                Warn("Steam registry key not found.");
+                return null;
             }
-            catch (Exception ex) { Warn($"Registry/VDF error: {ex.Message}"); }
-        }
 
-        // ── Step 2 (Linux): known Steam roots + VDF ──────────────────────────
-        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+            string? found = TryLibrary(steamRoot);
+            if (found != null) { Success($"Found (registry): {found}"); return found; }
+
+            foreach (string lib in ParseLibraryFoldersVdf(steamRoot))
+            {
+                found = TryLibrary(lib);
+                if (found != null) { Success($"Found (VDF library): {found}"); return found; }
+            }
+            Warn("Not found in any Steam library from libraryfolders.vdf.");
+        }
+        catch (Exception ex) { Warn($"Registry/VDF error: {ex.Message}"); }
+        return null;
+    }
+
+    static string? TryUnixSteamDetection()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return null;
+
+        foreach (string root in LinuxSteamRoots())
         {
-            foreach (string root in LinuxSteamRoots())
+            string? found = TryLibrary(root);
+            if (found != null) { Success($"Found (Linux Steam): {found}"); return found; }
+
+            foreach (string lib in ParseLibraryFoldersVdf(root))
             {
-                string? found = TryLibrary(root);
-                if (found != null) { Success($"Found (Linux Steam): {found}"); return found; }
-                foreach (string lib in ParseLibraryFoldersVdf(root))
-                {
-                    found = TryLibrary(lib);
-                    if (found != null) { Success($"Found (Linux VDF): {found}"); return found; }
-                }
+                found = TryLibrary(lib);
+                if (found != null) { Success($"Found (Linux VDF): {found}"); return found; }
             }
         }
+        return null;
+    }
 
-        // ── Step 3: all drives × Steam root candidates ────────────────────────
+    static string? ScanDrivesForSteamLayout()
+    {
         Info("Scanning drives for Steam-layout paths …");
         foreach (char drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
         {
@@ -475,8 +395,11 @@ class Program
                 if (found != null) { Success($"Found (Steam scan): {found}"); return found; }
             }
         }
+        return null;
+    }
 
-        // ── Step 4: all drives × non-Steam / custom parent candidates ─────────
+    static string? ScanDrivesForCustomLayout()
+    {
         Info("Scanning drives for non-Steam / custom installation paths …");
         foreach (char drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
         {
@@ -485,25 +408,24 @@ class Program
 
             foreach (string folder in NonSteamParentCandidates)
             {
-                string parent = string.IsNullOrEmpty(folder)
-                    ? driveRoot
-                    : Path.Combine(driveRoot, folder);
+                string parent = string.IsNullOrEmpty(folder) ? driveRoot : Path.Combine(driveRoot, folder);
                 string? found = TryGameFolder(parent);
                 if (found != null) { Success($"Found (custom scan): {found}"); return found; }
             }
         }
+        return null;
+    }
 
-        // ── Step 5: user-profile special directories ──────────────────────────
+    static string? ScanUserProfileDirectories()
+    {
         Info("Checking user-profile directories …");
         foreach (string root in UserProfileSearchRoots())
         {
             if (!Directory.Exists(root)) continue;
 
-            // Direct child: %USERPROFILE%\Desktop\Data Center
             string? found = TryGameFolder(root);
             if (found != null) { Success($"Found (user profile): {found}"); return found; }
 
-            // One level deeper with non-Steam parent names
             foreach (string folder in NonSteamParentCandidates)
             {
                 if (string.IsNullOrEmpty(folder)) continue;
@@ -511,13 +433,36 @@ class Program
                 if (found != null) { Success($"Found (user profile): {found}"); return found; }
             }
         }
-
-        Warn("Game installation not found automatically.");
-        Warn($"Tip: create '{ConfigFileName}' next to this EXE and put the game path inside.");
         return null;
     }
 
-    // ── Step 3: Discover assemblies ────────────────────────────────────────
+    static IEnumerable<string> LinuxSteamRoots()
+    {
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        yield return Path.Combine(home, ".steam", "steam");
+        yield return Path.Combine(home, ".local", "share", "Steam");
+        yield return Path.Combine(home, "snap", "steam", "common", ".steam", "root");
+        yield return "/usr/share/steam";
+        yield return "/opt/steam";
+    }
+
+    static IEnumerable<string> UserProfileSearchRoots()
+    {
+        string? profile = Environment.GetEnvironmentVariable("USERPROFILE") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrEmpty(profile))
+        {
+            yield return profile;
+            yield return Path.Combine(profile, "Desktop");
+            yield return Path.Combine(profile, "Downloads");
+            yield return Path.Combine(profile, "Documents");
+            yield return Path.Combine(profile, "Documents", "Games");
+            yield return Path.Combine(profile, "Documents", "My Games");
+        }
+
+        string? localApp = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrEmpty(localApp)) yield return localApp;
+    }
+
     static string[] DiscoverAssemblies(string directory)
     {
         Info($"Step 3 – Scanning for .dll files in: {directory}");
@@ -526,242 +471,35 @@ class Program
             .OrderBy(f => f)
             .ToArray();
         Info($"Found {files.Length} .dll file(s) to process.");
-        foreach (string f in files)
-            Debug($"  Discovered: {f}");
+        foreach (string f in files) Debug($"  Discovered: {f}");
         return files;
     }
 
-    static Dictionary<DN.TypeDef, int> BuildTypeReferenceCounts(DN.ModuleDefMD module)
-    {
-        var counts = new Dictionary<DN.TypeDef, int>(new ReferenceComparer<DN.TypeDef>());
-        foreach (DN.TypeDef type in module.GetTypes())
-            counts[type] = 0;
+    static bool ShouldProcessAssembly(string path) => !NeverTouchAssemblies.Contains(Path.GetFileName(path));
+    static bool IsConservative(string path) => ConservativeAssemblies.Contains(Path.GetFileName(path));
+    static bool IsCompilerGenerated(DN.TypeDef type) => type.Name.Length >= 2 && type.Name[0] == '<';
 
-        void Increment(DN.TypeDef? type)
-        {
-            if (type != null && counts.ContainsKey(type))
-                counts[type]++;
-        }
-
-        void ScanTypeRef(DN.ITypeDefOrRef? typeRef)
-        {
-            switch (typeRef)
-            {
-                case DN.TypeDef typeDef:
-                    Increment(typeDef);
-                    break;
-                case DN.TypeSpec typeSpec:
-                    ScanTypeSig(typeSpec.TypeSig);
-                    break;
-            }
-        }
-
-        void ScanTypeSig(DN.TypeSig? sig)
-        {
-            while (sig != null)
-            {
-                switch (sig)
-                {
-                    case DN.TypeDefOrRefSig typeDefOrRefSig:
-                        ScanTypeRef(typeDefOrRefSig.TypeDefOrRef);
-                        return;
-
-                    case DN.GenericInstSig genericInstSig:
-                        ScanTypeSig(genericInstSig.GenericType);
-                        foreach (DN.TypeSig argument in genericInstSig.GenericArguments)
-                            ScanTypeSig(argument);
-                        return;
-
-                    case DN.FnPtrSig fnPtrSig:
-                        ScanMethodSig(fnPtrSig.MethodSig);
-                        return;
-
-                    case DN.CModOptSig cModOptSig:
-                        sig = cModOptSig.Next;
-                        continue;
-
-                    case DN.CModReqdSig cModReqdSig:
-                        sig = cModReqdSig.Next;
-                        continue;
-
-                    case DN.PinnedSig pinnedSig:
-                        sig = pinnedSig.Next;
-                        continue;
-
-                    case DN.PtrSig ptrSig:
-                        sig = ptrSig.Next;
-                        continue;
-
-                    case DN.ByRefSig byRefSig:
-                        sig = byRefSig.Next;
-                        continue;
-
-                    case DN.SZArraySig szArraySig:
-                        sig = szArraySig.Next;
-                        continue;
-
-                    case DN.ArraySig arraySig:
-                        sig = arraySig.Next;
-                        continue;
-
-                    case DN.SentinelSig sentinelSig:
-                        sig = sentinelSig.Next;
-                        continue;
-
-                    default:
-                        return;
-                }
-            }
-        }
-
-        void ScanMethodSig(DN.MethodSig? methodSig)
-        {
-            if (methodSig == null)
-                return;
-
-            ScanTypeSig(methodSig.RetType);
-            foreach (DN.TypeSig parameter in methodSig.Params)
-                ScanTypeSig(parameter);
-        }
-
-        void ScanFieldSig(DN.FieldSig? fieldSig)
-        {
-            if (fieldSig != null)
-                ScanTypeSig(fieldSig.Type);
-        }
-
-        void ScanMethodBody(DN.MethodDef method)
-        {
-            DNEmit.CilBody body = method.Body;
-            if (body == null)
-                return;
-
-            foreach (DNEmit.Local local in body.Variables)
-                ScanTypeSig(local.Type);
-
-            foreach (DNEmit.Instruction instruction in body.Instructions)
-            {
-                switch (instruction.Operand)
-                {
-                    case DN.ITypeDefOrRef typeDefOrRef:
-                        ScanTypeRef(typeDefOrRef);
-                        break;
-
-                    case DN.MemberRef memberRef:
-                        ScanTypeRef(memberRef.DeclaringType);
-                        break;
-
-                    case DN.IMethodDefOrRef methodDefOrRef:
-                        ScanTypeRef(methodDefOrRef.DeclaringType);
-                        break;
-
-                    case DN.IField fieldRef:
-                        ScanTypeRef(fieldRef.DeclaringType);
-                        break;
-                }
-            }
-        }
-
-        foreach (DN.TypeDef type in module.GetTypes())
-        {
-            ScanTypeRef(type.BaseType);
-
-            foreach (DN.InterfaceImpl iface in type.Interfaces)
-                ScanTypeRef(iface.Interface);
-
-            foreach (DN.CustomAttribute customAttribute in type.CustomAttributes)
-                if (customAttribute.Constructor != null && customAttribute.Constructor.DeclaringType is DN.TypeDef attributeType)
-                    Increment(attributeType);
-
-            foreach (DN.FieldDef field in type.Fields)
-                ScanFieldSig(field.FieldSig);
-
-            foreach (DN.MethodDef method in type.Methods)
-            {
-                ScanMethodSig(method.MethodSig);
-
-                foreach (DN.CustomAttribute customAttribute in method.CustomAttributes)
-                    if (customAttribute.Constructor != null && customAttribute.Constructor.DeclaringType is DN.TypeDef attributeType)
-                        Increment(attributeType);
-
-                ScanMethodBody(method);
-            }
-
-            foreach (DN.EventDef eventDef in type.Events)
-                ScanTypeRef(eventDef.EventType);
-        }
-
-        return counts;
-    }
-
-    // ── Steps 4 & 5: Process a single assembly ─────────────────────────────
     static void ProcessAssembly(string path, bool forceRewrite, bool conservative = false)
     {
         string fileName = Path.GetFileName(path);
         Info($"─── Processing: {fileName}{(conservative ? "  [conservative]" : "")} ───");
 
-        byte[] data     = File.ReadAllBytes(path);
-        bool   modified = false;
-        int    removedHere = 0;
-        bool   rewrittenHere = false;
+        byte[] data = File.ReadAllBytes(path);
+        bool modified = false;
+        int removedHere = 0;
+        bool rewrittenHere = false;
 
-        // ── Phase 4: dnlib – duplicate type removal ───────────────────────
         Debug($"[dnlib] Loading assembly: {fileName}");
         using (var module = DN.ModuleDefMD.Load(data))
         {
-            Dictionary<DN.TypeDef, int> referenceCounts = BuildTypeReferenceCounts(module);
-            var toRemove = new List<DN.TypeDef>();
-
-            int scanned = 0;
-            foreach (IGrouping<string, DN.TypeDef> group in module.GetTypes().GroupBy(type => type.FullName, StringComparer.Ordinal))
-            {
-                List<DN.TypeDef> duplicates = group.ToList();
-                scanned += duplicates.Count;
-
-                if (duplicates.Count < 2)
-                    continue;
-
-                if (conservative && !duplicates.All(IsCompilerGenerated))
-                {
-                    Debug($"[dnlib] Conservative: skipping non-compiler-generated duplicate group '{group.Key}'.");
-                    continue;
-                }
-
-                int referencedCopies = duplicates.Count(type => referenceCounts.TryGetValue(type, out int count) && count > 0);
-                if (referencedCopies > 1)
-                {
-                    Warn($"[dnlib] Duplicate group '{group.Key}' has {referencedCopies} referenced copies; skipping unsafe removal.");
-                    continue;
-                }
-
-                foreach (DN.TypeDef duplicate in duplicates.Where(type => !referenceCounts.TryGetValue(type, out int count) || count == 0))
-                {
-                    Debug($"[dnlib] Duplicate detected: '{duplicate.FullName}' (reference count: 0)");
-                    toRemove.Add(duplicate);
-                }
-            }
-
-            Debug($"[dnlib] Types scanned: {scanned}  |  Duplicates queued for removal: {toRemove.Count}");
+            Dictionary<DN.TypeDef, int> referenceCounts = TypeReferenceCounter.Build(module);
+            var toRemove = FindDuplicateTypesToRemove(module, referenceCounts, conservative);
+            Debug($"[dnlib] Duplicates queued for removal: {toRemove.Count}");
 
             if (toRemove.Count > 0)
             {
-                foreach (DN.TypeDef t in toRemove)
-                {
-                    string removedName = t.FullName;
-                    if (t.IsNested)
-                        t.DeclaringType.NestedTypes.Remove(t);
-                    else
-                        module.Types.Remove(t);
-
-                    _typesRemoved++;
-                    removedHere++;
-                    Success($"[dnlib] Removed duplicate type: '{removedName}'");
-                }
-
-                Debug($"[dnlib] Writing modified module to memory …");
-                using var ms = new MemoryStream();
-                module.Write(ms);
-                data     = ms.ToArray();
+                RemoveDuplicateTypes(module, toRemove, ref removedHere);
+                data = WriteModuleToBytes(module);
                 modified = true;
                 Success($"[dnlib] {toRemove.Count} duplicate(s) removed from '{fileName}'.");
             }
@@ -771,58 +509,119 @@ class Program
             }
         }
 
-        // ── Phase 5: Mono.Cecil – metadata normalization & rewrite ─────────
-        if (forceRewrite || modified)
+        if (!RewriteIfNeeded(path, fileName, forceRewrite, modified, ref data, ref rewrittenHere)) return;
+        RecordAssemblyDetail(fileName, removedHere, rewrittenHere, conservative);
+    }
+
+    static List<DN.TypeDef> FindDuplicateTypesToRemove(DN.ModuleDefMD module, Dictionary<DN.TypeDef, int> referenceCounts, bool conservative)
+    {
+        var toRemove = new List<DN.TypeDef>();
+        foreach (var group in module.GetTypes().GroupBy(type => type.FullName, StringComparer.Ordinal))
         {
-            string reason = forceRewrite && modified ? "--rewrite flag + dnlib changes"
-                          : forceRewrite             ? "--rewrite flag"
-                          :                            "dnlib modifications";
+            List<DN.TypeDef> duplicates = group.ToList();
+            if (!ShouldRemoveDuplicateGroup(group.Key, duplicates, referenceCounts, conservative)) continue;
 
-            Info($"[Cecil] Rewriting '{fileName}' (reason: {reason}) …");
-            try
+            foreach (DN.TypeDef duplicate in duplicates.Where(type => !referenceCounts.TryGetValue(type, out int count) || count == 0))
             {
-                using var msIn  = new MemoryStream(data);
-                var readerParams = new Cecil.ReaderParameters { ReadingMode = Cecil.ReadingMode.Immediate };
-                using var asm   = Cecil.AssemblyDefinition.ReadAssembly(msIn, readerParams);
-                using var msOut = new MemoryStream();
-                asm.Write(msOut);
-                data = msOut.ToArray();
-                _rewritesPerformed++;
-                rewrittenHere = true;
-                Success($"[Cecil] Metadata normalization complete for '{fileName}'.");
+                Debug($"[dnlib] Duplicate detected: '{duplicate.FullName}' (reference count: 0)");
+                toRemove.Add(duplicate);
             }
-            catch (Exception ex)
-            {
-                _errors++;
-                Error($"[Cecil] Rewrite failed for '{fileName}': {ex.Message}");
-                Error($"Stack trace:\n{ex.StackTrace}");
-                return; // Do not overwrite the file with potentially broken data
-            }
-
-            Debug($"Writing {data.Length:N0} bytes back to: {path}");
-            BackupIfNeeded(path);
-            File.WriteAllBytes(path, data);
-            _assembliesModified++;
-            Success($"Saved: {fileName}");
         }
-        else
+        return toRemove;
+    }
+
+    static bool ShouldRemoveDuplicateGroup(string groupName, List<DN.TypeDef> duplicates, Dictionary<DN.TypeDef, int> referenceCounts, bool conservative)
+    {
+        if (duplicates.Count < 2) return false;
+        if (conservative && !duplicates.All(IsCompilerGenerated))
         {
-            Info($"No changes required for '{fileName}' – skipped.");
+            Debug($"[dnlib] Conservative: skipping non-compiler-generated duplicate group '{groupName}'.");
+            return false;
         }
 
-        if (removedHere > 0 || rewrittenHere)
+        int referencedCopies = duplicates.Count(type => referenceCounts.TryGetValue(type, out int count) && count > 0);
+        if (referencedCopies <= 1) return true;
+
+        Warn($"[dnlib] Duplicate group '{groupName}' has {referencedCopies} referenced copies; skipping unsafe removal.");
+        return false;
+    }
+
+    static void RemoveDuplicateTypes(DN.ModuleDefMD module, List<DN.TypeDef> toRemove, ref int removedHere)
+    {
+        foreach (DN.TypeDef type in toRemove)
         {
-            _assemblyDetails.Add(new Telemetry.AssemblyDetail
-            {
-                Name         = fileName,
-                TypesRemoved = removedHere,
-                Rewritten    = rewrittenHere,
-                Conservative = conservative,
-            });
+            string removedName = type.FullName;
+            if (type.IsNested) type.DeclaringType.NestedTypes.Remove(type);
+            else module.Types.Remove(type);
+            _typesRemoved++;
+            removedHere++;
+            Success($"[dnlib] Removed duplicate type: '{removedName}'");
         }
     }
 
-    // ── Backup helpers ─────────────────────────────────────────────────────
+    static byte[] WriteModuleToBytes(DN.ModuleDefMD module)
+    {
+        Debug("[dnlib] Writing modified module to memory …");
+        using var ms = new MemoryStream();
+        module.Write(ms);
+        return ms.ToArray();
+    }
+
+    static bool RewriteIfNeeded(string path, string fileName, bool forceRewrite, bool modified, ref byte[] data, ref bool rewrittenHere)
+    {
+        if (!forceRewrite && !modified)
+        {
+            Info($"No changes required for '{fileName}' – skipped.");
+            return true;
+        }
+
+        string reason = forceRewrite && modified ? "--rewrite flag + dnlib changes" : forceRewrite ? "--rewrite flag" : "dnlib modifications";
+        Info($"[Cecil] Rewriting '{fileName}' (reason: {reason}) …");
+        try
+        {
+            data = RewriteWithCecil(data, fileName);
+            rewrittenHere = true;
+        }
+        catch (Exception ex)
+        {
+            _errors++;
+            Error($"[Cecil] Rewrite failed for '{fileName}': {ex.Message}");
+            Error($"Stack trace:\n{ex.StackTrace}");
+            return false;
+        }
+
+        Debug($"Writing {data.Length:N0} bytes back to: {path}");
+        BackupIfNeeded(path);
+        File.WriteAllBytes(path, data);
+        _assembliesModified++;
+        Success($"Saved: {fileName}");
+        return true;
+    }
+
+    static byte[] RewriteWithCecil(byte[] data, string fileName)
+    {
+        using var msIn = new MemoryStream(data);
+        var readerParams = new Cecil.ReaderParameters { ReadingMode = Cecil.ReadingMode.Immediate };
+        using var asm = Cecil.AssemblyDefinition.ReadAssembly(msIn, readerParams);
+        using var msOut = new MemoryStream();
+        asm.Write(msOut);
+        _rewritesPerformed++;
+        Success($"[Cecil] Metadata normalization complete for '{fileName}'.");
+        return msOut.ToArray();
+    }
+
+    static void RecordAssemblyDetail(string fileName, int removedHere, bool rewrittenHere, bool conservative)
+    {
+        if (removedHere <= 0 && !rewrittenHere) return;
+        _assemblyDetails.Add(new Telemetry.AssemblyDetail
+        {
+            Name = fileName,
+            TypesRemoved = removedHere,
+            Rewritten = rewrittenHere,
+            Conservative = conservative,
+        });
+    }
+
     static void BackupIfNeeded(string path)
     {
         string backup = path + ".bak";
@@ -831,10 +630,7 @@ class Program
             File.Copy(path, backup);
             Info($"Backup created: {Path.GetFileName(backup)}");
         }
-        else
-        {
-            Debug($"Backup already exists, skipping: {Path.GetFileName(backup)}");
-        }
+        else Debug($"Backup already exists, skipping: {Path.GetFileName(backup)}");
     }
 
     static void RestoreAllBackups(string dir)
@@ -842,57 +638,82 @@ class Program
         Info("Restoring all .bak files...");
         foreach (string bak in Directory.GetFiles(dir, "*.dll.bak"))
         {
-            string original = bak[..^4]; // removes ".bak"
+            string original = bak[..^4];
             File.Copy(bak, original, overwrite: true);
             File.Delete(bak);
             Success($"Restored: {Path.GetFileName(original)}");
         }
     }
 
-    // ── Shim deployment ────────────────────────────────────────────────────
     static void DeployRuntimeShim(string il2CppAssembliesDir)
     {
-        // Two directories up → game root → Mods
         string gameRoot = Path.GetFullPath(Path.Combine(il2CppAssembliesDir, "..", ".."));
-        string modsDir  = Path.Combine(gameRoot, "Mods");
+        string modsDir = Path.Combine(gameRoot, "Mods");
         Directory.CreateDirectory(modsDir);
 
         string shimName = "UnityExplorerUnity6Shim.dll";
-        string source   = Path.Combine(AppContext.BaseDirectory, shimName);
-        string dest     = Path.Combine(modsDir, shimName);
+        string source = Path.Combine(AppContext.BaseDirectory, shimName);
+        string dest = Path.Combine(modsDir, shimName);
 
         if (!File.Exists(source))
-            throw new FileNotFoundException(
-                $"Shim DLL not found. Build Project 2 first and place '{shimName}' next to this tool.",
-                source);
+            throw new FileNotFoundException($"Shim DLL not found. Build Project 2 first and place '{shimName}' next to this tool.", source);
 
         File.Copy(source, dest, overwrite: true);
         Success($"Runtime Shim deployed → {dest}");
     }
 
-    // ── Final summary ──────────────────────────────────────────────────────
+    static void SendTelemetry(long durationMs)
+    {
+        if (_config == null) return;
+        var evt = new Telemetry.Event
+        {
+            Variant = "exe",
+            Version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown",
+            AssembliesScanned = _assembliesProcessed,
+            AssembliesModified = _assembliesModified,
+            AssembliesSkipped = Math.Max(0, _assembliesProcessed - _assembliesModified - _errors),
+            TypesRemoved = _typesRemoved,
+            RewritesPerformed = _rewritesPerformed,
+            Errors = _errors,
+            DurationMs = durationMs,
+            MachineKey = _config.Telemetry.AnonymousId,
+            Assemblies = _assemblyDetails,
+        };
+        Telemetry.PopulateEnvironment(evt);
+        Telemetry.DeriveOutcome(evt);
+        Telemetry.Send(_config.Telemetry, evt, line => Info(line));
+    }
+
     static void PrintSummary()
     {
-        // Each data line is:  "║  <label padded to 26> : <value padded to 30> ║"
-        // Box inner width = 58  →  border chars '║' + 58 chars + '║'
         const int LabelW = 28;
         const int ValueW = 28;
-        string Row(string label, int value) =>
-            $"║  {label.PadRight(LabelW)}: {value.ToString().PadRight(ValueW)}║";
+        string Row(string label, int value) => $"║  {label.PadRight(LabelW)}: {value.ToString().PadRight(ValueW)}║";
 
         Console.WriteLine();
         Console.WriteLine("╔══════════════════════════════════════════════════════════╗");
         Console.WriteLine("║                      FINAL SUMMARY                      ║");
         Console.WriteLine("╠══════════════════════════════════════════════════════════╣");
-        Console.WriteLine(Row("Assemblies processed",    _assembliesProcessed));
-        Console.WriteLine(Row("Assemblies modified",     _assembliesModified));
+        Console.WriteLine(Row("Assemblies processed", _assembliesProcessed));
+        Console.WriteLine(Row("Assemblies modified", _assembliesModified));
         Console.WriteLine(Row("Duplicate types removed", _typesRemoved));
-        Console.WriteLine(Row("Cecil rewrites performed",_rewritesPerformed));
-        Console.WriteLine(Row("Errors encountered",      _errors));
+        Console.WriteLine(Row("Cecil rewrites performed", _rewritesPerformed));
+        Console.WriteLine(Row("Errors encountered", _errors));
         Console.WriteLine("╚══════════════════════════════════════════════════════════╝");
-        if (_errors == 0)
-            Success("All operations completed without errors.");
-        else
-            Warn($"{_errors} error(s) occurred. Review [ERROR] lines above for details.");
+        if (_errors == 0) Success("All operations completed without errors.");
+        else Warn($"{_errors} error(s) occurred. Review [ERROR] lines above for details.");
     }
+
+    static void WriteLog(string line, bool toStderr)
+    {
+        if (toStderr) Console.Error.WriteLine(line);
+        else Console.WriteLine(line);
+        _logFile?.WriteLine(line);
+    }
+
+    static void Info(string msg) => WriteLog($"[INFO]    {msg}", false);
+    static void Debug(string msg) => WriteLog($"[DEBUG]   {msg}", false);
+    static void Warn(string msg) => WriteLog($"[WARN]    {msg}", false);
+    static void Success(string msg) => WriteLog($"[SUCCESS] {msg}", false);
+    static void Error(string msg) => WriteLog($"[ERROR]   {msg}", true);
 }
