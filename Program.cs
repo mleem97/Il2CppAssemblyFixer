@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using DN = dnlib.DotNet;
 using Il2CppAssemblyFixer.Shared;
 
 namespace Il2CppAssemblyFixer;
@@ -44,12 +43,7 @@ static partial class Program
         "UnityEngine.SceneManagement.dll",
     };
 
-    static int _assembliesProcessed;
-    static int _assembliesModified;
-    static int _typesRemoved;
-    static int _rewritesPerformed;
     static int _errors;
-    static readonly List<Telemetry.AssemblyDetail> _assemblyDetails = new();
     static FileLogger? _logFile;
     static FixerConfig? _config;
 
