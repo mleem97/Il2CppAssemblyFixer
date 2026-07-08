@@ -10,7 +10,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 This release introduces a new continuous-delivery versioning scheme: `1.50.3-U{run_number}`.
 Every push to `master` triggers a full build and a real GitHub release tagged with the current CI run number (e.g. `1.50.3-U42`).
 
-### Added
+### Added in 1.50.3-U series
 - **Manifest-based caching in plugin** — each fixed DLL's SHA256 is stored in `.il2cppfixer-manifest`
   inside the `Il2CppAssemblies` folder. Files whose hash still matches are skipped on subsequent
   game launches. After MelonLoader regenerates assemblies (post-update), hashes change and the
@@ -23,13 +23,13 @@ Every push to `master` triggers a full build and a real GitHub release tagged wi
 - **Auto-release workflow** — every master push creates a real GitHub release with full
   release-notes template and links the GitHub compare URL against the previous tag.
 
-### Changed
+### Changed in 1.50.3-U series
 - Plugin `MelonInfo` version bumped to `1.50.3` to align with the new versioning scheme.
 - Workflow drops the `dev-latest` rolling prerelease in favour of permanent per-build tags.
 
 ## [0.3.0] - 2026-05-03
 
-### Added
+### Added in 0.3.0
 - **`game-path.txt` config override** — place next to the EXE to point to any custom or non-Steam install path (accepts either the `Il2CppAssemblies` dir or the game root).
 - **Non-Steam / custom install detection** — drive scan now also checks `Games`, `MyGames`, `Spiele`, `Program Files`, and 10+ other common parent folders without the `steamapps/common/` prefix.
 - **User-profile directory scan** — searches Desktop, Downloads, Documents, Documents\Games, and LocalAppData as fallback locations.
@@ -37,43 +37,43 @@ Every push to `master` triggers a full build and a real GitHub release tagged wi
 - **`HKEY_CURRENT_USER` registry fallback** for Steam path detection.
 - **`libraryfolders.vdf` parser** — reads all configured Steam library paths so multi-library setups are fully covered.
 
-### Fixed
+### Fixed in 0.3.0
 - **Unity.Collections.dll crash (Issue #6)** — `BuildTypeReferenceCounts` now follows `TypeSpec` wrappers when scanning `MemberRef`/`IMethodDefOrRef`/`IField` operands. Nested types referenced only through generic instantiations are no longer incorrectly removed, preventing the `ModuleWriterException`.
 
-### Changed
+### Changed in 0.3.0
 - EXE now processes **all non-skipped assemblies** by default instead of only `Assembly-CSharp*.dll`. The `--all` flag and `_processAll` field were removed.
 - Auto-detection restructured into 5 explicit stages with detailed debug output at each step.
 - CI workflow: replaced `win-x86` target (broken with .NET 10 single-file) with **linux-x64 self-contained** single-file; upgraded `softprops/action-gh-release` to v2; releases now only trigger on `v*` tags.
 
-### Removed
+### Removed in 0.3.0
 - `--all` CLI flag (now the default behaviour).
 - `FINAL_STATUS.md`, `COMMIT_AUDIT.md` — internal one-off AI session artefacts.
 - `scripts/rewrite-msg.ps1`, `scripts/rewrite-msg.sh` — one-time history-rewrite scripts.
 
 ## [0.2.0] - 2026-05-02
 
-### Added
+### Added in 0.2.0
 - MelonLoader plugin (`MelonPlugin/Il2CppAssemblyFixerPlugin.dll`) for automatic duplicate-type fixes before mods load.
 - `build.ps1` script to build Windows/Linux binaries and MelonLoader plugin.
 - Repository automation: `AGENTS.md`, `CHANGELOG.md`, commit-msg hooks for Conventional Commits, and scripts for version tagging.
 
-### Fixed
+### Fixed in 0.2.0
 - Reference-aware duplicate type removal prevents TypeDef removal when still in use.
 
-### Removed
+### Removed in 0.2.0
 - `UnityExplorerUnity6Shim` project removed from repository.
 
-### Changed
+### Changed in 0.2.0
 - Commit messages normalised to Conventional Commits format.
 
 ## [0.1.0] - 2026-05-02
 
-### Added
+### Added in 0.1.0
 - Reference-aware duplicate type removal to prevent `ModuleWriterException` when types are still referenced.
 - Single-file Windows and Linux executable builds.
 
-### Fixed
+### Fixed in 0.1.0
 - Crash when removing duplicate type definitions — now checks reference count before removal.
 
-### Changed
+### Changed in 0.1.0
 - Improved assembly processing pipeline and error messages.

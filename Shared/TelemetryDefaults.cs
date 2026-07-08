@@ -17,10 +17,10 @@ namespace Il2CppAssemblyFixer.Shared;
 /// </summary>
 internal static class TelemetryDefaults
 {
-    public const string Endpoint = "__TELEMETRY_ENDPOINT__";
-    public const string Username = "__TELEMETRY_USERNAME__";
-    public const string ApiKey   = "__TELEMETRY_API_KEY__";
-    public const string TenantId = "__TELEMETRY_TENANT_ID__";
+    public const string Endpoint  = "__TELEMETRY_ENDPOINT__";
+    public const string Username  = "__TELEMETRY_USERNAME__";
+    public const string AuthToken = "__TELEMETRY_AUTH_TOKEN__";
+    public const string TenantId  = "__TELEMETRY_TENANT_ID__";
 
     /// <summary>
     /// Returns an empty string when <paramref name="raw"/> is still an
@@ -30,9 +30,9 @@ internal static class TelemetryDefaults
     /// </summary>
     public static string Resolve(string raw)
     {
-        if (string.IsNullOrEmpty(raw)) return "";
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
         if (raw.Length > 4 && raw.StartsWith("__TELEMETRY_") && raw.EndsWith("__"))
-            return "";
+            return string.Empty;
         return raw;
     }
 }

@@ -23,10 +23,10 @@ import sys
 from pathlib import Path
 
 PLACEHOLDERS = (
-    ("__TELEMETRY_ENDPOINT__",  "TELEMETRY_ENDPOINT"),
-    ("__TELEMETRY_USERNAME__",  "TELEMETRY_USERNAME"),
-    ("__TELEMETRY_API_KEY__",   "TELEMETRY_API_KEY"),
-    ("__TELEMETRY_TENANT_ID__", "TELEMETRY_TENANT_ID"),
+    ("__TELEMETRY_ENDPOINT__",   "TELEMETRY_ENDPOINT"),
+    ("__TELEMETRY_USERNAME__",   "TELEMETRY_USERNAME"),
+    ("__TELEMETRY_AUTH_TOKEN__", "TELEMETRY_API_KEY"),
+    ("__TELEMETRY_TENANT_ID__",  "TELEMETRY_TENANT_ID"),
 )
 
 PLACEHOLDER_PATTERN = re.compile(r"__TELEMETRY_[A-Z_]+__")
@@ -42,7 +42,7 @@ def fail(message: str) -> None:
 
 
 def escape_for_csharp_literal(value: str) -> str:
-    """Escape a value so it can be safely placed inside a C# verbatim or regular string.
+    """Escape a value so it can be safely placed inside a C# string literal.
 
     The placeholders are surrounded by double quotes in the source, e.g.
     ``"__TELEMETRY_ENDPOINT__"``. We substitute the inner text only, so we
