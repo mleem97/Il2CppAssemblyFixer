@@ -7,6 +7,7 @@
 [![Build](https://img.shields.io/github/actions/workflow/status/mleem97/Il2CppAssemblyFixer/dotnet-desktop.yml?style=for-the-badge&label=Build%20%26%20Release)](https://github.com/mleem97/Il2CppAssemblyFixer/actions/workflows/dotnet-desktop.yml)
 [![Latest Release](https://img.shields.io/github/v/release/mleem97/Il2CppAssemblyFixer?style=for-the-badge)](https://github.com/mleem97/Il2CppAssemblyFixer/releases/latest)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green?style=for-the-badge)](./LICENSE)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/7608e274bcc140b9b17636fe00c135d3)](https://app.codacy.com/gh/mleem97/Il2CppAssemblyFixer/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 
 ## Links
 
