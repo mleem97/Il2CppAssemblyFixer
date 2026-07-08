@@ -5,9 +5,17 @@ Purpose
 -------
 Commit message conventions, changelog format, and release workflow for this repository.
 
+Boundaries
+----------
+- Do not rewrite repository history, move tags, or force-push unless the user explicitly requests it.
+- Do not commit secrets, telemetry credentials, local paths, build artifacts, or generated release ZIPs.
+- Do not change public release behavior, telemetry defaults, or MelonLoader compatibility without documenting the reason in the PR.
+- Do not bypass CI or merge failing changes without user confirmation.
+- When a rule conflicts with a direct user request, ask for confirmation before proceeding.
+
 1) Commit messages
 ------------------
-All commits MUST follow the Conventional Commits specification:
+Commits should follow the Conventional Commits specification unless the user explicitly requests a different format:
 https://www.conventionalcommits.org/en/v1.0.0/
 
 Examples:
