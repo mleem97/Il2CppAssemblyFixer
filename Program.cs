@@ -217,6 +217,9 @@ class Program
 
     static void RunInstallerProcess(string installer)
     {
+        if (!string.Equals(Path.GetFileName(installer), InstallerFileName, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Unexpected installer executable name.");
+
         var psi = new ProcessStartInfo
         {
             FileName = installer,
@@ -226,6 +229,8 @@ class Program
         };
         psi.ArgumentList.Add("--melonloader.agfregenerate");
 
+        // Security: the executable path is built from the application base directory
+        // and a fixed file name; arguments are fixed literals passed via ArgumentList.
         using var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("Process.Start returned null.");
 
@@ -252,7 +257,7 @@ class Program
 
         foreach (string key in keys)
         {
-            Debug($"Querying registry: {key}\InstallPath");
+            Debug($"Querying registry key: {key}; value: InstallPath");
             string? value = Registry.GetValue(key, "InstallPath", null) as string;
             if (!string.IsNullOrEmpty(value))
             {
