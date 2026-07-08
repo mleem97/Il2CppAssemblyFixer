@@ -2,16 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using MelonLoader;
 using MelonLoader.Utils;
 using DN = dnlib.DotNet;
-using DNEmit = dnlib.DotNet.Emit;
 using Cecil = Mono.Cecil;
 using Il2CppAssemblyFixer.Shared;
 
-// MelonLoader plugin metadata – runs BEFORE MelonMods are loaded
 [assembly: MelonInfo(typeof(Il2CppAssemblyFixerPlugin.FixerPlugin), "Il2CppAssemblyFixer", "1.50.3", "mleem97",
     "https://github.com/mleem97/Il2CppAssemblyFixer")]
 [assembly: MelonGame]
@@ -20,33 +17,26 @@ namespace Il2CppAssemblyFixerPlugin;
 
 /// <summary>
 /// MelonPlugin that repairs Il2Cpp-generated assemblies before any MelonMod is loaded.
-///
-/// What it fixes:
-///   • BadImageFormatException from duplicate type defs ('&lt;&gt;O' delegate caches)
-///   • ModuleWriterException on Unity.Collections.dll caused by TypeSpec-wrapped refs
-///   • Subtle metadata corruption normalized via Mono.Cecil rewrite
-///
-/// Caching: each fixed file is hashed into a manifest in the Il2CppAssemblies dir.
-/// On subsequent launches, files whose hash still matches are skipped completely –
-/// so the plugin only does work after MelonLoader regenerates assemblies.
-///
-/// Safety: every operation is wrapped in try/catch; the plugin will NEVER throw
-/// an exception out into MelonLoader. Worst case it logs a warning and continues.
 /// </summary>
 public class FixerPlugin : MelonPlugin
 {
     private const string ManifestFileName = ".il2cppfixer-manifest";
+    private static FileLogger? _logFile;
+    private static FixerConfig? _config;
 
-    private sealed class ReferenceComparer<T> : IEqualityComparer<T> where T : class
+    private sealed class ProcessingStats
     {
-        public bool Equals(T? x, T? y) => ReferenceEquals(x, y);
-        public int GetHashCode(T obj) => RuntimeHelpers.GetHashCode(obj);
+        public int Scanned { get; set; }
+        public int Processed { get; set; }
+        public int Fixed { get; set; }
+        public int Skipped { get; set; }
+        public int Errors { get; set; }
+        public int RemovedTypes { get; set; }
+        public List<Telemetry.AssemblyDetail> Details { get; } = new();
     }
 
-    // ── Lifecycle hook ─────────────────────────────────────────────────────
     public override void OnPreInitialization()
     {
-        // Outer guard: under no circumstances let an exception escape into MelonLoader.
         try
         {
             RunFixer();
@@ -58,150 +48,219 @@ public class FixerPlugin : MelonPlugin
         }
     }
 
-    // Tee console + file logging. The plugin uses MelonLogger (which goes to
-    // Latest.log) AND mirrors lines into <MelonLoaderDir>/fixer.log.
-    private static FileLogger? _logFile;
-    private static FixerConfig? _config;
+    private static void Msg(string message)
+    {
+        MelonLogger.Msg(message);
+        _logFile?.WriteLine($"[INFO]  {message}");
+    }
 
-    private static void Msg (string m) { MelonLogger.Msg     (m); _logFile?.WriteLine($"[INFO]  {m}"); }
-    private static void Warn(string m) { MelonLogger.Warning (m); _logFile?.WriteLine($"[WARN]  {m}"); }
-    private static void Err (string m) { MelonLogger.Error   (m); _logFile?.WriteLine($"[ERROR] {m}"); }
+    private static void Warn(string message)
+    {
+        MelonLogger.Warning(message);
+        _logFile?.WriteLine($"[WARN]  {message}");
+    }
+
+    private static void Err(string message)
+    {
+        MelonLogger.Error(message);
+        _logFile?.WriteLine($"[ERROR] {message}");
+    }
 
     private static void RunFixer()
     {
-        string? mlDir = SafeGetMelonLoaderDir();
-        if (!string.IsNullOrEmpty(mlDir))
-        {
-            string? pluginDir = null;
-            try { pluginDir = Path.GetDirectoryName(typeof(FixerPlugin).Assembly.Location); } catch { }
-            _config = FixerConfig.LoadOrCreate(
-                mlDir!,
-                w => Warn($"[Il2CppAssemblyFixer] {w}"),
-                pluginDir ?? "",
-                AppDomain.CurrentDomain.BaseDirectory);
-            if (_config.Logging.WriteLogFile)
-                _logFile = new FileLogger(mlDir!, _config.Logging.LogFileName, "Il2CppAssemblyFixer (Plugin)");
-        }
-
+        InitializeConfigAndLogging();
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        LogHeader();
 
+        string? assembliesDir = ResolveAssembliesDirectory();
+        if (!ValidateAssembliesDirectory(assembliesDir)) return;
+
+        Dictionary<string, string> manifest = LoadManifest(assembliesDir!);
+        bool manifestDirty;
+        ProcessingStats stats = ProcessAssemblies(assembliesDir!, manifest, out manifestDirty);
+        SaveManifestIfNeeded(assembliesDir!, manifest, manifestDirty);
+        LogSummary(stats);
+
+        sw.Stop();
+        SendTelemetry(stats, sw.ElapsedMilliseconds);
+        _logFile?.Dispose();
+    }
+
+    private static void InitializeConfigAndLogging()
+    {
+        string? mlDir = SafeGetMelonLoaderDir();
+        if (string.IsNullOrEmpty(mlDir)) return;
+
+        string pluginDir = SafeGetPluginDirectory() ?? string.Empty;
+        _config = FixerConfig.LoadOrCreate(
+            mlDir,
+            warning => Warn($"[Il2CppAssemblyFixer] {warning}"),
+            pluginDir,
+            AppDomain.CurrentDomain.BaseDirectory);
+
+        if (_config.Logging.WriteLogFile)
+            _logFile = new FileLogger(mlDir, _config.Logging.LogFileName, "Il2CppAssemblyFixer (Plugin)");
+    }
+
+    private static string? SafeGetPluginDirectory()
+    {
+        try
+        {
+            return Path.GetDirectoryName(typeof(FixerPlugin).Assembly.Location);
+        }
+        catch (Exception)
+        {
+            // Assembly.Location can be unavailable for unusual loaders; config seeding
+            // still works from AppDomain.CurrentDomain.BaseDirectory.
+            return null;
+        }
+    }
+
+    private static void LogHeader()
+    {
         Msg("═══════════════════════════════════════════════════════════");
         Msg("  Il2CppAssemblyFixer – scanning Il2CppAssemblies …");
         Msg("═══════════════════════════════════════════════════════════");
         if (_logFile?.Path != null) Msg($"[Il2CppAssemblyFixer] Log file: {_logFile.Path}");
-        if (_config != null)
-            Msg(_config.Telemetry.Enabled
-                ? $"[Il2CppAssemblyFixer] Telemetry enabled → {_config.Telemetry.Endpoint} ({_config.Telemetry.Format})"
-                : "[Il2CppAssemblyFixer] Telemetry disabled (opt-in via fixer_config.json).");
+        if (_config == null) return;
 
-        string? assembliesDir = ResolveAssembliesDirectory();
+        Msg(_config.Telemetry.Enabled
+            ? $"[Il2CppAssemblyFixer] Telemetry enabled → {_config.Telemetry.Endpoint} ({_config.Telemetry.Format})"
+            : "[Il2CppAssemblyFixer] Telemetry disabled (opt-in via fixer_config.json).");
+    }
 
-        if (string.IsNullOrEmpty(assembliesDir) || !Directory.Exists(assembliesDir))
+    private static bool ValidateAssembliesDirectory(string? assembliesDir)
+    {
+        if (!string.IsNullOrEmpty(assembliesDir) && Directory.Exists(assembliesDir))
         {
-            Warn($"[Il2CppAssemblyFixer] Il2CppAssemblies directory not found: " +
-                 $"'{assembliesDir ?? "<null>"}'");
-            Warn("[Il2CppAssemblyFixer] If mods fail to load, run Il2CppAssemblyFixer.exe manually.");
-            _logFile?.Dispose();
-            return;
+            Msg($"[Il2CppAssemblyFixer] Scanning: {assembliesDir}");
+            return true;
         }
 
-        Msg($"[Il2CppAssemblyFixer] Scanning: {assembliesDir}");
+        Warn($"[Il2CppAssemblyFixer] Il2CppAssemblies directory not found: '{assembliesDir ?? "<null>"}'");
+        Warn("[Il2CppAssemblyFixer] If mods fail to load, run Il2CppAssemblyFixer.exe manually.");
+        _logFile?.Dispose();
+        return false;
+    }
 
-        // Load manifest of previously fixed files (hash per filename).
-        Dictionary<string, string> manifest = LoadManifest(assembliesDir);
-        bool manifestDirty = false;
-
+    private static ProcessingStats ProcessAssemblies(
+        string assembliesDir,
+        Dictionary<string, string> manifest,
+        out bool manifestDirty)
+    {
         string[] dlls = Directory.GetFiles(assembliesDir, "*.dll", SearchOption.TopDirectoryOnly);
-        int processed = 0, fixedCount = 0, skipped = 0, errors = 0, removedTypes = 0;
-        var details = new List<Telemetry.AssemblyDetail>();
+        var stats = new ProcessingStats { Scanned = dlls.Length };
+        manifestDirty = false;
 
         foreach (string dll in dlls)
+            manifestDirty |= ProcessOneAssembly(dll, manifest, stats);
+
+        return stats;
+    }
+
+    private static bool ProcessOneAssembly(string dll, Dictionary<string, string> manifest, ProcessingStats stats)
+    {
+        string fileName = Path.GetFileName(dll);
+        if (IsCached(fileName, dll, manifest, stats)) return false;
+
+        stats.Processed++;
+        try
         {
-            string fileName = Path.GetFileName(dll);
-            string currentHash;
-            try { currentHash = HashFile(dll); }
-            catch (Exception ex)
-            {
-                errors++;
-                Warn($"[Il2CppAssemblyFixer] Cannot hash '{fileName}': {ex.Message}");
-                continue;
-            }
+            int removed = FixAssembly(dll);
+            stats.RemovedTypes += removed;
+            if (removed > 0)
+                RecordFixedAssembly(fileName, removed, stats);
 
-            // Skip files whose current hash already matches a previous fix.
-            if (manifest.TryGetValue(fileName, out string? savedHash) && savedHash == currentHash)
-            {
-                skipped++;
-                continue;
-            }
+            manifest[fileName] = HashFile(dll);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            stats.Errors++;
+            Err($"[Il2CppAssemblyFixer] Error processing '{fileName}': {ex.Message}");
+            return false;
+        }
+    }
 
-            processed++;
-            try
-            {
-                int removed = FixAssembly(dll);
-                removedTypes += removed;
-                if (removed > 0)
-                {
-                    fixedCount++;
-                    Msg($"[Il2CppAssemblyFixer] Fixed {removed} duplicate(s) in: {fileName}");
-                    details.Add(new Telemetry.AssemblyDetail
-                    {
-                        Name         = fileName,
-                        TypesRemoved = removed,
-                        Rewritten    = true,
-                        Conservative = false,
-                    });
-                }
-
-                // Always update manifest with post-fix hash (so unchanged files skip next time).
-                manifest[fileName] = HashFile(dll);
-                manifestDirty = true;
-            }
-            catch (Exception ex)
-            {
-                errors++;
-                Err($"[Il2CppAssemblyFixer] Error processing '{fileName}': {ex.Message}");
-            }
+    private static bool IsCached(string fileName, string dll, Dictionary<string, string> manifest, ProcessingStats stats)
+    {
+        string currentHash;
+        try
+        {
+            currentHash = HashFile(dll);
+        }
+        catch (Exception ex)
+        {
+            stats.Errors++;
+            Warn($"[Il2CppAssemblyFixer] Cannot hash '{fileName}': {ex.Message}");
+            return true;
         }
 
-        if (manifestDirty)
-        {
-            try { SaveManifest(assembliesDir, manifest); }
-            catch (Exception ex)
-            {
-                Warn($"[Il2CppAssemblyFixer] Could not write manifest: {ex.Message}");
-            }
-        }
+        if (!manifest.TryGetValue(fileName, out string? savedHash) || savedHash != currentHash)
+            return false;
 
-        Msg($"[Il2CppAssemblyFixer] Summary – scanned: {dlls.Length}  " +
-                        $"processed: {processed}  fixed: {fixedCount}  " +
-                        $"skipped (cached): {skipped}  errors: {errors}  " +
-                        $"types removed: {removedTypes}");
+        stats.Skipped++;
+        return true;
+    }
+
+    private static void RecordFixedAssembly(string fileName, int removed, ProcessingStats stats)
+    {
+        stats.Fixed++;
+        Msg($"[Il2CppAssemblyFixer] Fixed {removed} duplicate(s) in: {fileName}");
+        stats.Details.Add(new Telemetry.AssemblyDetail
+        {
+            Name = fileName,
+            TypesRemoved = removed,
+            Rewritten = true,
+            Conservative = false,
+        });
+    }
+
+    private static void SaveManifestIfNeeded(string assembliesDir, Dictionary<string, string> manifest, bool manifestDirty)
+    {
+        if (!manifestDirty) return;
+
+        try
+        {
+            SaveManifest(assembliesDir, manifest);
+        }
+        catch (Exception ex)
+        {
+            Warn($"[Il2CppAssemblyFixer] Could not write manifest: {ex.Message}");
+        }
+    }
+
+    private static void LogSummary(ProcessingStats stats)
+    {
+        Msg($"[Il2CppAssemblyFixer] Summary – scanned: {stats.Scanned}  " +
+            $"processed: {stats.Processed}  fixed: {stats.Fixed}  " +
+            $"skipped (cached): {stats.Skipped}  errors: {stats.Errors}  " +
+            $"types removed: {stats.RemovedTypes}");
         Msg("═══════════════════════════════════════════════════════════");
+    }
 
-        sw.Stop();
-        if (_config != null)
+    private static void SendTelemetry(ProcessingStats stats, long durationMs)
+    {
+        if (_config == null) return;
+
+        var evt = new Telemetry.Event
         {
-            var evt = new Telemetry.Event
-            {
-                Variant            = "plugin",
-                Version            = typeof(FixerPlugin).Assembly.GetName().Version?.ToString() ?? "unknown",
-                AssembliesScanned  = dlls.Length,
-                AssembliesModified = fixedCount,
-                AssembliesSkipped  = skipped,
-                TypesRemoved       = removedTypes,
-                RewritesPerformed  = fixedCount,
-                Errors             = errors,
-                DurationMs         = sw.ElapsedMilliseconds,
-                MachineKey         = _config.Telemetry.AnonymousId,
-                Assemblies         = details,
-            };
-            Telemetry.PopulateEnvironment(evt);
-            Telemetry.PopulateMelonInfo(evt);
-            Telemetry.DeriveOutcome(evt);
-            Telemetry.Send(_config.Telemetry, evt, line => Msg($"[Il2CppAssemblyFixer] {line}"));
-        }
-
-        _logFile?.Dispose();
+            Variant = "plugin",
+            Version = typeof(FixerPlugin).Assembly.GetName().Version?.ToString() ?? "unknown",
+            AssembliesScanned = stats.Scanned,
+            AssembliesModified = stats.Fixed,
+            AssembliesSkipped = stats.Skipped,
+            TypesRemoved = stats.RemovedTypes,
+            RewritesPerformed = stats.Fixed,
+            Errors = stats.Errors,
+            DurationMs = durationMs,
+            MachineKey = _config.Telemetry.AnonymousId,
+            Assemblies = stats.Details,
+        };
+        Telemetry.PopulateEnvironment(evt);
+        Telemetry.PopulateMelonInfo(evt);
+        Telemetry.DeriveOutcome(evt);
+        Telemetry.Send(_config.Telemetry, evt, line => Msg($"[Il2CppAssemblyFixer] {line}"));
     }
 
     private static string? SafeGetMelonLoaderDir()
@@ -211,13 +270,14 @@ public class FixerPlugin : MelonPlugin
             string mlDir = MelonEnvironment.MelonLoaderDirectory;
             if (!string.IsNullOrEmpty(mlDir)) return mlDir;
         }
-        catch { /* older MelonLoader */ }
+        catch (Exception)
+        {
+            // Older MelonLoader versions might not expose MelonEnvironment.
+        }
 
         string fallback = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MelonLoader");
         return Directory.Exists(fallback) ? fallback : null;
     }
-
-    // ── Manifest (per-file hash cache) ────────────────────────────────────
 
     private static Dictionary<string, string> LoadManifest(string dir)
     {
@@ -234,7 +294,7 @@ public class FixerPlugin : MelonPlugin
                     dict[line.Substring(0, tab)] = line.Substring(tab + 1);
             }
         }
-        catch
+        catch (Exception)
         {
             // Corrupt manifest – just rebuild it.
             dict.Clear();
@@ -259,31 +319,36 @@ public class FixerPlugin : MelonPlugin
         return Convert.ToHexString(hash);
     }
 
-    // ── Path resolution ────────────────────────────────────────────────────
-
     private static string? ResolveAssembliesDirectory()
     {
-        // Primary: MelonLoader environment API
-        try
-        {
-            string mlDir = MelonEnvironment.MelonLoaderDirectory;
-            if (!string.IsNullOrEmpty(mlDir))
-            {
-                string candidate = Path.Combine(mlDir, "Il2CppAssemblies");
-                if (Directory.Exists(candidate)) return candidate;
-            }
-        }
-        catch
-        {
-            // Older MelonLoader versions might not expose MelonEnvironment.
-        }
+        string? fromEnvironment = ResolveAssembliesFromEnvironment();
+        if (fromEnvironment != null) return fromEnvironment;
 
-        // Fallback 1: <process base>\MelonLoader\Il2CppAssemblies
         string appBase = AppDomain.CurrentDomain.BaseDirectory;
         string fallback = Path.Combine(appBase, "MelonLoader", "Il2CppAssemblies");
         if (Directory.Exists(fallback)) return fallback;
 
-        // Fallback 2: walk up from the loaded plugin assembly looking for MelonLoader\Il2CppAssemblies
+        return ResolveAssembliesFromPluginLocation() ?? fallback;
+    }
+
+    private static string? ResolveAssembliesFromEnvironment()
+    {
+        try
+        {
+            string mlDir = MelonEnvironment.MelonLoaderDirectory;
+            if (string.IsNullOrEmpty(mlDir)) return null;
+            string candidate = Path.Combine(mlDir, "Il2CppAssemblies");
+            return Directory.Exists(candidate) ? candidate : null;
+        }
+        catch (Exception)
+        {
+            // Older MelonLoader versions might not expose MelonEnvironment.
+            return null;
+        }
+    }
+
+    private static string? ResolveAssembliesFromPluginLocation()
+    {
         try
         {
             string? dir = Path.GetDirectoryName(typeof(FixerPlugin).Assembly.Location);
@@ -294,206 +359,85 @@ public class FixerPlugin : MelonPlugin
                 dir = Path.GetDirectoryName(dir);
             }
         }
-        catch { /* ignore */ }
-
-        return fallback; // return the conventional path even if missing – caller will warn
+        catch (Exception)
+        {
+            // Some loaders can hide Assembly.Location; the conventional fallback remains available.
+        }
+        return null;
     }
-
-    // ── Core fix logic (same algorithm as the EXE, embedded for self-sufficiency) ──
 
     private static int FixAssembly(string path)
     {
         byte[] data = File.ReadAllBytes(path);
-
-        // ── Phase 1: dnlib – detect and remove duplicate type definitions ──
         using var module = DN.ModuleDefMD.Load(data);
 
-        Dictionary<DN.TypeDef, int> referenceCounts = BuildTypeReferenceCounts(module);
-        var toRemove = new List<DN.TypeDef>();
-
-        foreach (IGrouping<string, DN.TypeDef> group in module.GetTypes().GroupBy(t => t.FullName, StringComparer.Ordinal))
-        {
-            List<DN.TypeDef> duplicates = group.ToList();
-            if (duplicates.Count < 2) continue;
-
-            int referencedCopies = duplicates.Count(t => referenceCounts.TryGetValue(t, out int c) && c > 0);
-            if (referencedCopies > 1)
-            {
-                Warn($"[Il2CppAssemblyFixer] Duplicate group '{group.Key}' has " +
-                                    $"{referencedCopies} referenced copies; skipping unsafe removal.");
-                continue;
-            }
-
-            foreach (DN.TypeDef dup in duplicates.Where(t => !referenceCounts.TryGetValue(t, out int c) || c == 0))
-                toRemove.Add(dup);
-        }
-
+        Dictionary<DN.TypeDef, int> referenceCounts = TypeReferenceCounter.Build(module);
+        List<DN.TypeDef> toRemove = FindDuplicateTypesToRemove(module, referenceCounts);
         if (toRemove.Count == 0) return 0;
 
-        foreach (DN.TypeDef t in toRemove)
-        {
-            if (t.IsNested) t.DeclaringType.NestedTypes.Remove(t);
-            else            module.Types.Remove(t);
-        }
-
-        using var msAfterDnlib = new MemoryStream();
-        module.Write(msAfterDnlib);
-        data = msAfterDnlib.ToArray();
-
-        // ── Phase 2: Mono.Cecil – metadata normalization after structural changes ──
-        try
-        {
-            using var msIn      = new MemoryStream(data);
-            var readerParams    = new Cecil.ReaderParameters { ReadingMode = Cecil.ReadingMode.Immediate };
-            using var asmDef    = Cecil.AssemblyDefinition.ReadAssembly(msIn, readerParams);
-            using var msOut     = new MemoryStream();
-            asmDef.Write(msOut);
-            data = msOut.ToArray();
-        }
-        catch (Exception cecilEx)
-        {
-            // dnlib-cleaned data is still usable; log warning and proceed.
-            Warn($"[Il2CppAssemblyFixer] Cecil normalization skipped for " +
-                                $"'{Path.GetFileName(path)}': {cecilEx.Message}");
-        }
-
+        RemoveDuplicateTypes(module, toRemove);
+        data = WriteModuleToBytes(module);
+        data = TryNormalizeWithCecil(path, data);
         File.WriteAllBytes(path, data);
         return toRemove.Count;
     }
 
-    private static Dictionary<DN.TypeDef, int> BuildTypeReferenceCounts(DN.ModuleDefMD module)
+    private static List<DN.TypeDef> FindDuplicateTypesToRemove(DN.ModuleDefMD module, Dictionary<DN.TypeDef, int> referenceCounts)
     {
-        var counts = new Dictionary<DN.TypeDef, int>(new ReferenceComparer<DN.TypeDef>());
-        foreach (DN.TypeDef type in module.GetTypes())
-            counts[type] = 0;
-
-        void Increment(DN.TypeDef? type)
+        var toRemove = new List<DN.TypeDef>();
+        foreach (var group in module.GetTypes().GroupBy(type => type.FullName, StringComparer.Ordinal))
         {
-            if (type != null && counts.ContainsKey(type))
-                counts[type]++;
-        }
+            List<DN.TypeDef> duplicates = group.ToList();
+            if (!CanRemoveDuplicateGroup(group.Key, duplicates, referenceCounts)) continue;
 
-        void ScanTypeRef(DN.ITypeDefOrRef? typeRef)
+            foreach (DN.TypeDef duplicate in duplicates.Where(type => !referenceCounts.TryGetValue(type, out int count) || count == 0))
+                toRemove.Add(duplicate);
+        }
+        return toRemove;
+    }
+
+    private static bool CanRemoveDuplicateGroup(string groupName, List<DN.TypeDef> duplicates, Dictionary<DN.TypeDef, int> referenceCounts)
+    {
+        if (duplicates.Count < 2) return false;
+
+        int referencedCopies = duplicates.Count(type => referenceCounts.TryGetValue(type, out int count) && count > 0);
+        if (referencedCopies <= 1) return true;
+
+        Warn($"[Il2CppAssemblyFixer] Duplicate group '{groupName}' has {referencedCopies} referenced copies; skipping unsafe removal.");
+        return false;
+    }
+
+    private static void RemoveDuplicateTypes(DN.ModuleDefMD module, List<DN.TypeDef> toRemove)
+    {
+        foreach (DN.TypeDef type in toRemove)
         {
-            switch (typeRef)
-            {
-                case DN.TypeDef typeDef:
-                    Increment(typeDef);
-                    break;
-                case DN.TypeSpec typeSpec:
-                    ScanTypeSig(typeSpec.TypeSig);
-                    break;
-            }
+            if (type.IsNested) type.DeclaringType.NestedTypes.Remove(type);
+            else module.Types.Remove(type);
         }
+    }
 
-        void ScanTypeSig(DN.TypeSig? sig)
+    private static byte[] WriteModuleToBytes(DN.ModuleDefMD module)
+    {
+        using var msAfterDnlib = new MemoryStream();
+        module.Write(msAfterDnlib);
+        return msAfterDnlib.ToArray();
+    }
+
+    private static byte[] TryNormalizeWithCecil(string path, byte[] data)
+    {
+        try
         {
-            while (sig != null)
-            {
-                switch (sig)
-                {
-                    case DN.TypeDefOrRefSig typeDefOrRefSig:
-                        ScanTypeRef(typeDefOrRefSig.TypeDefOrRef);
-                        return;
-
-                    case DN.GenericInstSig genericInstSig:
-                        ScanTypeSig(genericInstSig.GenericType);
-                        foreach (DN.TypeSig argument in genericInstSig.GenericArguments)
-                            ScanTypeSig(argument);
-                        return;
-
-                    case DN.FnPtrSig fnPtrSig:
-                        ScanMethodSig(fnPtrSig.MethodSig);
-                        return;
-
-                    case DN.CModOptSig cModOptSig:  sig = cModOptSig.Next;  continue;
-                    case DN.CModReqdSig cModReqdSig: sig = cModReqdSig.Next; continue;
-                    case DN.PinnedSig pinnedSig:    sig = pinnedSig.Next;    continue;
-                    case DN.PtrSig ptrSig:          sig = ptrSig.Next;       continue;
-                    case DN.ByRefSig byRefSig:      sig = byRefSig.Next;     continue;
-                    case DN.SZArraySig szArraySig:  sig = szArraySig.Next;   continue;
-                    case DN.ArraySig arraySig:      sig = arraySig.Next;     continue;
-                    case DN.SentinelSig sentinelSig: sig = sentinelSig.Next; continue;
-
-                    default:
-                        return;
-                }
-            }
+            using var msIn = new MemoryStream(data);
+            var readerParams = new Cecil.ReaderParameters { ReadingMode = Cecil.ReadingMode.Immediate };
+            using var asmDef = Cecil.AssemblyDefinition.ReadAssembly(msIn, readerParams);
+            using var msOut = new MemoryStream();
+            asmDef.Write(msOut);
+            return msOut.ToArray();
         }
-
-        void ScanMethodSig(DN.MethodSig? methodSig)
+        catch (Exception cecilEx)
         {
-            if (methodSig == null) return;
-            ScanTypeSig(methodSig.RetType);
-            foreach (DN.TypeSig parameter in methodSig.Params)
-                ScanTypeSig(parameter);
+            Warn($"[Il2CppAssemblyFixer] Cecil normalization skipped for '{Path.GetFileName(path)}': {cecilEx.Message}");
+            return data;
         }
-
-        void ScanFieldSig(DN.FieldSig? fieldSig)
-        {
-            if (fieldSig != null) ScanTypeSig(fieldSig.Type);
-        }
-
-        void ScanMethodBody(DN.MethodDef method)
-        {
-            DNEmit.CilBody body = method.Body;
-            if (body == null) return;
-
-            foreach (DNEmit.Local local in body.Variables)
-                ScanTypeSig(local.Type);
-
-            foreach (DNEmit.Instruction instruction in body.Instructions)
-            {
-                switch (instruction.Operand)
-                {
-                    case DN.ITypeDefOrRef typeDefOrRef:
-                        ScanTypeRef(typeDefOrRef);
-                        break;
-
-                    case DN.MemberRef memberRef:
-                        ScanTypeRef(memberRef.DeclaringType);
-                        break;
-
-                    case DN.IMethodDefOrRef methodDefOrRef:
-                        ScanTypeRef(methodDefOrRef.DeclaringType);
-                        break;
-
-                    case DN.IField fieldRef:
-                        ScanTypeRef(fieldRef.DeclaringType);
-                        break;
-                }
-            }
-        }
-
-        foreach (DN.TypeDef type in module.GetTypes())
-        {
-            ScanTypeRef(type.BaseType);
-
-            foreach (DN.InterfaceImpl iface in type.Interfaces)
-                ScanTypeRef(iface.Interface);
-
-            foreach (DN.CustomAttribute customAttribute in type.CustomAttributes)
-                if (customAttribute.Constructor?.DeclaringType is DN.TypeDef attributeType)
-                    Increment(attributeType);
-
-            foreach (DN.FieldDef field in type.Fields)
-                ScanFieldSig(field.FieldSig);
-
-            foreach (DN.MethodDef method in type.Methods)
-            {
-                ScanMethodSig(method.MethodSig);
-
-                foreach (DN.CustomAttribute customAttribute in method.CustomAttributes)
-                    if (customAttribute.Constructor?.DeclaringType is DN.TypeDef attributeType)
-                        Increment(attributeType);
-
-                ScanMethodBody(method);
-            }
-
-            foreach (DN.EventDef eventDef in type.Events)
-                ScanTypeRef(eventDef.EventType);
-        }
-
-        return counts;
     }
 }
