@@ -37,28 +37,29 @@ internal sealed class FixerConfig
         // Self-hosted Loki examples:
         //   "https://loki.example.com/loki/api/v1/push"            (Format=loki)
         //   "https://ingest.example.com/fixer"                     (Format=json)
-        public string Endpoint             { get; set; } = "";
+        public string Endpoint             { get; set; } = string.Empty;
 
-        // "json" → POST a single JSON event to Endpoint with optional Bearer.
+        // "json" → POST a single JSON event to Endpoint with optional bearer auth.
         // "loki" → wrap event into Loki push format (works with self-hosted Loki
         //          and any compatible ingester).
         public string Format               { get; set; } = "loki";
 
-        // Optional HTTP Basic auth credentials. Useful when Loki sits behind
+        // Optional HTTP Basic auth username. Useful when Loki sits behind
         // nginx/traefik with basic auth, or when using a Grafana-Cloud-style
-        // user:key pair. Leave empty for unauthenticated self-hosted ingest.
-        public string Username             { get; set; } = "";
+        // user:token pair. Leave empty for unauthenticated self-hosted ingest.
+        public string Username             { get; set; } = string.Empty;
 
-        // Loki/Basic auth: password. JSON format: sent as `Authorization: Bearer
-        // <ApiKey>` instead, when non-empty.
-        public string ApiKey               { get; set; } = "";
+        // Loki/Basic auth credential. JSON format sends it as Authorization: Bearer.
+        // Preserve the existing JSON field name for backwards compatibility.
+        [JsonPropertyName("apiKey")]
+        public string AuthToken            { get; set; } = string.Empty;
 
         // Self-hosted Loki tenant id (`X-Scope-OrgID` header). Required only when
         // the target Loki runs in multi-tenant mode. Leave empty otherwise.
-        public string TenantId             { get; set; } = "";
+        public string TenantId             { get; set; } = string.Empty;
 
         // Stable per-installation UUID. Auto-generated on first run.
-        public string AnonymousId          { get; set; } = "";
+        public string AnonymousId          { get; set; } = string.Empty;
 
         public bool   IncludeAssemblyList  { get; set; } = true;
         public bool   IncludeMachineInfo   { get; set; } = true;
@@ -89,7 +90,7 @@ internal sealed class FixerConfig
         Action<string>? warn = null,
         params string[] seedSearchDirs)
     {
-        string path = Path.Combine(melonLoaderDir, FileName);
+        string path = GetConfigPath(melonLoaderDir);
         FixerConfig cfg;
         bool seeded = false;
 
@@ -99,11 +100,12 @@ internal sealed class FixerConfig
         {
             try
             {
-                string json = File.ReadAllText(sourcePath);
+                string safeSourcePath = Path.GetFullPath(sourcePath);
+                string json = File.ReadAllText(safeSourcePath);
                 cfg = JsonSerializer.Deserialize<FixerConfig>(json, JsonOpts) ?? new FixerConfig();
-                seeded = !string.Equals(sourcePath, path, StringComparison.OrdinalIgnoreCase);
+                seeded = !string.Equals(safeSourcePath, path, StringComparison.OrdinalIgnoreCase);
                 if (seeded)
-                    warn?.Invoke($"Seeded {FileName} from shipped copy: {sourcePath}");
+                    warn?.Invoke($"Seeded {FileName} from shipped copy: {safeSourcePath}");
             }
             catch (Exception ex)
             {
@@ -132,12 +134,27 @@ internal sealed class FixerConfig
         return cfg;
     }
 
+    private static string GetConfigPath(string melonLoaderDir)
+    {
+        if (string.IsNullOrWhiteSpace(melonLoaderDir))
+            throw new ArgumentException("Config directory cannot be empty.", nameof(melonLoaderDir));
+
+        string fullDir = Path.GetFullPath(melonLoaderDir);
+        string safeFileName = Path.GetFileName(FileName);
+        if (!string.Equals(safeFileName, FileName, StringComparison.Ordinal))
+            throw new InvalidOperationException("Invalid config file name.");
+
+        Directory.CreateDirectory(fullDir);
+        return Path.Combine(fullDir, safeFileName);
+    }
+
     private static string? FindSeed(string targetPath, IEnumerable<string> seedSearchDirs)
     {
         foreach (string dir in seedSearchDirs)
         {
-            if (string.IsNullOrEmpty(dir)) continue;
-            string candidate = Path.Combine(dir, FileName);
+            if (string.IsNullOrWhiteSpace(dir)) continue;
+
+            string candidate = Path.Combine(Path.GetFullPath(dir), Path.GetFileName(FileName));
             if (!File.Exists(candidate)) continue;
             // Don't seed from the target itself.
             if (string.Equals(Path.GetFullPath(candidate),
