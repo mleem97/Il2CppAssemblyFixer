@@ -10,6 +10,12 @@ namespace Il2CppAssemblyFixer;
 
 static partial class Program
 {
+    static int _assembliesProcessed;
+    static int _assembliesModified;
+    static int _typesRemoved;
+    static int _rewritesPerformed;
+    static readonly List<Telemetry.AssemblyDetail> _assemblyDetails = new();
+
     static void ProcessDiscoveredAssemblies(string targetDir, bool forceRewrite)
     {
         string[] dllFiles = DiscoverAssemblies(targetDir);
@@ -54,7 +60,12 @@ static partial class Program
 
     static bool ShouldProcessAssembly(string path) => !NeverTouchAssemblies.Contains(Path.GetFileName(path));
     static bool IsConservative(string path) => ConservativeAssemblies.Contains(Path.GetFileName(path));
-    static bool IsCompilerGenerated(DN.TypeDef type) => type.Name.Length >= 2 && type.Name[0] == '<';
+
+    static bool IsCompilerGenerated(DN.TypeDef type)
+    {
+        string name = type.Name.String ?? string.Empty;
+        return name.Length >= 2 && name[0] == '<';
+    }
 
     static void ProcessAssembly(string path, bool forceRewrite, bool conservative = false)
     {
