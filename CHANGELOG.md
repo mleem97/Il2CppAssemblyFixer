@@ -1,79 +1,13 @@
-# Changelog
+# Changelog — Il2CppAssemblyFixer
 
-All notable changes to this project will be documented in this file.
-Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: [SemVer](https://semver.org/)
+Format: [Keep a Changelog](https://keepachangelog.com/de/1.0.0/). Version: siehe [`VERSION`](VERSION).
 
 ## [Unreleased]
 
-## [1.50.3-U series] - 2026-05-03
-
-This release introduces a new continuous-delivery versioning scheme: `1.50.3-U{run_number}`.
-Every push to `master` triggers a full build and a real GitHub release tagged with the current CI run number (e.g. `1.50.3-U42`).
-
 ### Added
-- **Manifest-based caching in plugin** — each fixed DLL's SHA256 is stored in `.il2cppfixer-manifest`
-  inside the `Il2CppAssemblies` folder. Files whose hash still matches are skipped on subsequent
-  game launches. After MelonLoader regenerates assemblies (post-update), hashes change and the
-  plugin re-runs automatically.
-- **Outer try/catch wrapper** in `OnPreInitialization` — the plugin will never throw an unhandled
-  exception into MelonLoader. Worst case: a warning is logged and MelonLoader continues normally.
-- **Multi-stage path resolution** in plugin — uses `MelonEnvironment.MelonLoaderDirectory` first,
-  then falls back to `<process base>/MelonLoader/Il2CppAssemblies`, then walks up from the loaded
-  plugin DLL location.
-- **Auto-release workflow** — every master push creates a real GitHub release with full
-  release-notes template and links the GitHub compare URL against the previous tag.
 
-### Changed
-- Plugin `MelonInfo` version bumped to `1.50.3` to align with the new versioning scheme.
-- Workflow drops the `dev-latest` rolling prerelease in favour of permanent per-build tags.
+- Einheitliches Open-Source-Layout (README, Docs, Badges) nach gregCore-Vorbild.
 
-## [0.3.0] - 2026-05-03
+## [0.1.0] — 2026-09-22
 
-### Added
-- **`game-path.txt` config override** — place next to the EXE to point to any custom or non-Steam install path (accepts either the `Il2CppAssemblies` dir or the game root).
-- **Non-Steam / custom install detection** — drive scan now also checks `Games`, `MyGames`, `Spiele`, `Program Files`, and 10+ other common parent folders without the `steamapps/common/` prefix.
-- **User-profile directory scan** — searches Desktop, Downloads, Documents, Documents\Games, and LocalAppData as fallback locations.
-- **Linux/macOS Steam roots** — probes `~/.steam/steam`, `~/.local/share/Steam`, Snap Steam, and `/opt/steam` before falling back to drive scan.
-- **`HKEY_CURRENT_USER` registry fallback** for Steam path detection.
-- **`libraryfolders.vdf` parser** — reads all configured Steam library paths so multi-library setups are fully covered.
-
-### Fixed
-- **Unity.Collections.dll crash (Issue #6)** — `BuildTypeReferenceCounts` now follows `TypeSpec` wrappers when scanning `MemberRef`/`IMethodDefOrRef`/`IField` operands. Nested types referenced only through generic instantiations are no longer incorrectly removed, preventing the `ModuleWriterException`.
-
-### Changed
-- EXE now processes **all non-skipped assemblies** by default instead of only `Assembly-CSharp*.dll`. The `--all` flag and `_processAll` field were removed.
-- Auto-detection restructured into 5 explicit stages with detailed debug output at each step.
-- CI workflow: replaced `win-x86` target (broken with .NET 10 single-file) with **linux-x64 self-contained** single-file; upgraded `softprops/action-gh-release` to v2; releases now only trigger on `v*` tags.
-
-### Removed
-- `--all` CLI flag (now the default behaviour).
-- `FINAL_STATUS.md`, `COMMIT_AUDIT.md` — internal one-off AI session artefacts.
-- `scripts/rewrite-msg.ps1`, `scripts/rewrite-msg.sh` — one-time history-rewrite scripts.
-
-## [0.2.0] - 2026-05-02
-
-### Added
-- MelonLoader plugin (`MelonPlugin/Il2CppAssemblyFixerPlugin.dll`) for automatic duplicate-type fixes before mods load.
-- `build.ps1` script to build Windows/Linux binaries and MelonLoader plugin.
-- Repository automation: `AGENTS.md`, `CHANGELOG.md`, commit-msg hooks for Conventional Commits, and scripts for version tagging.
-
-### Fixed
-- Reference-aware duplicate type removal prevents TypeDef removal when still in use.
-
-### Removed
-- `UnityExplorerUnity6Shim` project removed from repository.
-
-### Changed
-- Commit messages normalised to Conventional Commits format.
-
-## [0.1.0] - 2026-05-02
-
-### Added
-- Reference-aware duplicate type removal to prevent `ModuleWriterException` when types are still referenced.
-- Single-file Windows and Linux executable builds.
-
-### Fixed
-- Crash when removing duplicate type definitions — now checks reference count before removal.
-
-### Changed
-- Improved assembly processing pipeline and error messages.
+- Initialer standardisierter Stand.

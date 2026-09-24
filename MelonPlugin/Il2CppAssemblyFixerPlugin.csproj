@@ -11,6 +11,9 @@
     <!-- NOT self-contained – MelonLoader provides the runtime -->
     <SelfContained>false</SelfContained>
 
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+
     <NoWarn>$(NoWarn);NU1510</NoWarn>
   </PropertyGroup>
 
@@ -20,14 +23,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="dnlib" Version="4.4.0" />
+    <PackageReference Include="dnlib" Version="4.5.0" />
     <PackageReference Include="Mono.Cecil" Version="0.11.6" />
     <!--
       LavaGang.MelonLoader provides MelonLoader's public API for compilation only.
       The actual MelonLoader assemblies are provided at runtime by the game
       installation – we therefore exclude all runtime assets from this reference.
     -->
-    <PackageReference Include="LavaGang.MelonLoader" Version="0.7.2">
+    <PackageReference Include="LavaGang.MelonLoader" Version="0.7.3">
       <PrivateAssets>all</PrivateAssets>
       <ExcludeAssets>runtime</ExcludeAssets>
     </PackageReference>

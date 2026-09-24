@@ -1,50 +1,17 @@
-AGENTS
-======
+# AGENTS.md — Hinweise für KI-Agenten (Il2CppAssemblyFixer)
 
-Purpose
--------
-Commit message conventions, changelog format, and release workflow for this repository.
+Repo: [https://github.com/mleem97/Il2CppAssemblyFixer](https://github.com/mleem97/Il2CppAssemblyFixer) · Lizenz: Apache-2.0 · Version: siehe `VERSION`.
 
-1) Commit messages
-------------------
-All commits MUST follow the Conventional Commits specification:
-https://www.conventionalcommits.org/en/v1.0.0/
+## Pflichten
 
-Examples:
-  feat(detection): add game-path.txt config override
-  fix(dnlib): follow TypeSpec wrappers in reference counting
-  chore: remove one-off scripts
-  ci: upgrade release action to v2
+1. **Erst lesen:** `README.md`, `docs/INDEX.md`, `CONTRIBUTING.md` — danach erst ändern.
+2. **Keine Secrets committen** (Keys, Tokens, `.env`). Key-Nutzung nur via Umgebungsvariablen.
+3. **Historie erhalten:** kein `push --force`, kein History-Rewrite ohne Auftrag.
+4. **Änderungen belegen:** vor dem Fertigmelden bauen/testen, was das Repo hergibt (`QUICKSTART.md`).
+5. **Doku synchron halten:** bei neuen Features `README.md` + `docs/` + `CHANGELOG.md` (Unreleased) aktualisieren.
+6. **Konventionen:** Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:` …), eine logische Änderung pro Commit.
+7. **Bei Unsicherheit:** anhalten und fragen statt raten — insbesondere bei Deletes, Migrations, CI.
 
-Breaking changes require the `!` marker or `BREAKING CHANGE:` in the body (triggers a MAJOR bump).
+## Layout
 
-2) Semantic versioning
-----------------------
-SemVer: MAJOR.MINOR.PATCH
-
-  feat        → MINOR
-  fix         → PATCH
-  BREAKING    → MAJOR
-  chore/docs/ci/refactor/test → no version bump
-
-3) Changelog format
--------------------
-Use Keep a Changelog (https://keepachangelog.com) in CHANGELOG.md.
-Keep an `[Unreleased]` section at the top.
-When cutting a release, move Unreleased entries into `## [X.Y.Z] - YYYY-MM-DD` and tag the commit.
-Groups: Added, Changed, Fixed, Removed, Security.
-
-4) Git hooks
-------------
-A commit-msg hook lives in `.githooks/`. Enable it locally:
-
-  git config core.hooksPath .githooks
-
-5) Release workflow
--------------------
-1. Fill in CHANGELOG.md Unreleased section.
-2. Bump version in `MelonPlugin/Il2CppAssemblyFixerPlugin.csproj` (MelonInfo attribute).
-3. Commit: `chore(release): prepare v X.Y.Z`
-4. Tag: `git tag vX.Y.Z`
-5. Push branch and tag: `git push && git push --tags`
-6. CI builds and publishes the GitHub Release automatically.
+Siehe [README.md](README.md) → Repository Layout. Zentrale Anlaufstellen: `docs/INDEX.md`, `scripts/`, `tests/`.
