@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, shitcloud, il2cppassemblyfixer]
     outputs:
       version: ${{ steps.version.outputs.version }}
       linux_runner: ${{ steps.pick.outputs.linux }}
@@ -31,31 +31,10 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building version: $VERSION"
 
-      - name: Pick runner (self-hosted with hosted fallback)
+      - name: Pick runner (self-hosted only)
         id: pick
-        env:
-          GH_TOKEN: ${{ secrets.SELF_HOSTED_RUNNER_PAT }}
-          REPO: ${{ github.repository }}
         run: |
-          set +e
-          lin='["ubuntu-latest"]'
-
-          if [[ -z "$GH_TOKEN" ]]; then
-            echo "No SELF_HOSTED_RUNNER_PAT configured — using hosted runner."
-          else
-            json=$(gh api "repos/$REPO/actions/runners" --paginate 2>/dev/null)
-            if [[ -z "$json" ]]; then
-              echo "Runner API call failed — using hosted runner."
-            else
-              has_lin=$(echo "$json" | jq '[.runners[]
-                | select(.status=="online" and .busy==false)
-                | select(any(.labels[]; .name=="self-hosted"))
-                | select(any(.labels[]; (.name|ascii_downcase)=="linux"))
-              ] | length')
-              [[ "${has_lin:-0}" -gt 0 ]] && lin='["self-hosted","Linux","X64"]'
-            fi
-          fi
-
+          lin='["self-hosted","Linux","X64","shitcloud","il2cppassemblyfixer"]'
           echo "linux=$lin" >> "$GITHUB_OUTPUT"
           echo "Linux runner: $lin"
 
@@ -194,7 +173,7 @@ jobs:
   release:
     needs: [ prepare, build ]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/'))
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, shitcloud, il2cppassemblyfixer]
 
     steps:
       - uses: actions/checkout@v5
